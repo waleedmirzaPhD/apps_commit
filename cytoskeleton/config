@@ -1,0 +1,70 @@
+nx = 50
+ny = 100
+
+fMesh =/home/mirza/src/apps/cytoskeleton/circle_n2.vtk
+
+visc      = 1.0
+
+cvisc     = -0.5
+
+rvisc = 1.0
+
+frank   = 0.01
+
+
+lambda_iso   = 0.2
+
+lambda_aniso = 8.0
+
+lambda_rot   = -5.0
+
+kp           = 0.02
+
+kd    = 0.1
+
+fric    = 5.0
+
+sus20    = 2.5
+
+sus40    = 1.5
+
+hcrit    = 0.273
+
+deltat  = 0.2
+
+linTol = 1e-8
+
+resTol = 1e-8
+
+solTol = 1e-8
+
+maxIter = 6
+
+r_in = 0.75
+
+linImax = 10000
+
+maxDelt = 10
+
+adaptiveStepTime = 0.975
+
+nPrint = 1
+
+stab = 0
+
+uPoly = -0.08333
+
+t_stall = -10.0
+
+cCheck = false
+
+kosm = 0.0
+
+kgrad = 0.0
+
+L= 0.01
+
+lambda_trans = 1.5
+
+
+restart=0
