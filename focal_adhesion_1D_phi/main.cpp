@@ -1,6 +1,6 @@
 /*
 
-*******************************************************************************
+ *******************************************************************************
 Copyright (c) 2017-2023 Team hiperlife
 Authors: Daniel Santos-Oliván, Alejandro Torres-Sánchez and Guillermo Vilanova
 Contributors:
