@@ -1,6 +1,6 @@
 /*
 
- *******************************************************************************
+*******************************************************************************
 Copyright (c) 2017-2023 Team hiperlife
 Authors: Daniel Santos-Oliván, Alejandro Torres-Sánchez and Guillermo Vilanova
 Contributors:
@@ -70,7 +70,7 @@ static double x_0 = 0 + offset;
 static double x_1 = 1 + offset; 
 static double x_m = 0.5*(x_0 +x_1); 
 static int flag_domain_type = 3;   // 1 for biperiodic, 2 for sector and 3 for circle
-static double xi_2 = 0.0;
+static double xi_2 = -0.19;
 static double theta      = 30.*M_PI/180.;
 static double  fric      = 1.0;
 static double k_b        = 1;
