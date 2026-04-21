@@ -57,7 +57,7 @@ file LICENSE or https://opensource.org/license/gpl-3-0.
 #include <cmath>
 
 
-static double chi      = -6.5;
+static double chi      = -1; //==> change this
 static double kon  = 2.0;
 static double koff = 1;
 static double kon_phi  = 100.0;
@@ -65,19 +65,21 @@ static double koff_phi = 10;
 static double deltat   = 1E-4;
 static double mobility = 0.0675;
 static double epsilon2 = 5E-5;
-static double offset  =  6.5;  ; 
+static double offset  =  5.0;  ; 
 static double x_0 = 0 + offset; 
 static double x_1 = 1 + offset; 
 static double x_m = 0.5*(x_0 +x_1); 
 static int flag_domain_type = 3;   // 1 for biperiodic, 2 for sector and 3 for circle
-static double xi_2 = -0.19;
+static double xi_2 =    -0.07;
 static double theta      = 30.*M_PI/180.;
-static double  fric      = 1.0;
+static double  fric      = 100.0;
 static double k_b        = 1;
 static double K_subs     = 0.5;
 static double alpha_1    = 3.0;
 static double alpha_2    = 3.; 
-static double v_0        = 5.0;
+static double v_0        = 10.0;
+bool flag_micropattern   = 1.0; 
+
 double addGaussianNoise(double mean, double stddev)
 {
 
@@ -89,7 +91,7 @@ double addGaussianNoise(double mean, double stddev)
 
 }
 
-double  slip(double f,double v0)
+double  slip_rate(double f,double v0)
 {
     // double f_offset_1 = 2.0;
     // double f_offset_2 = 3.6;   
@@ -99,9 +101,20 @@ double  slip(double f,double v0)
     double f_offset_1 = 0.0;
     double f_offset_2 = 3.0;   
     return exp(-alpha_1*(f-f_offset_1))  +  exp(alpha_2*(f-f_offset_2));
+
 }
 
-
+double  catch_rate(double f,double v0)
+{
+    // double f_offset_1 = 2.0;
+    // double f_offset_2 = 3.6;   
+    // return exp(0.3*pow(f-f_offset_1,2)) -0.9 +  0*exp(alpha_2*(f-f_offset_2));
+    double A = exp(-10*f);
+    if (A<0.3333)
+        return 0.3333;
+    else 
+        return A;
+}
 
 
 
@@ -176,9 +189,10 @@ void LS(hiperlife::FillStructure& fillStr)
     double u_mag = sqrt(u[0]*u[0] + u[1]*u[1]);
     double us_mag = sqrt(u_s[0]*u_s[0] + u_s[1]*u_s[1]);
     double f_mag = abs(k_b*(u_mag-us_mag));
-    double A = slip(f_mag,1);
-    double xi_2_ = xi_2;
-    double chi_ = chi;
+    double A = slip_rate(f_mag,1);
+    double A_catch = catch_rate(f_mag,1);
+    double xi_2_ = xi_2*f_mag/(4.0*A_catch);
+    double chi_ = chi/A_catch;
 
     // if (A<1)
     // {
@@ -186,14 +200,14 @@ void LS(hiperlife::FillStructure& fillStr)
     //     xi_2_ = xi_2;
     // }
 
-    if (A>10)
-    {
-        A=5E2;
-        chi_ = 0;
-        xi_2_ = 0 ;
-    } 
-    v[0] =  k_b*(u_mag-us_mag);
-    v[1] =  0;
+    // if (A>10)
+    // {
+    //     A=5E2;
+    //     chi_ = 0;
+    //     xi_2_ = 0 ;
+    // } 
+    // v[0] =  
+    // v[1] =  0;
     v_mag = sqrt(v[0]*v[0] + v[1]*v[1]);
     double r    = sqrt(x[0]*x[0] +  x[1]*x[1]);
     double kon_ = kon_phi;
@@ -202,7 +216,7 @@ void LS(hiperlife::FillStructure& fillStr)
     double epsilon2_  = epsilon2;
 
 
-    double advec_param = 1E-5 ; //3E-5;
+    double advec_param = 1 ; //3E-5;
     double phi_0 = x_0; 
     double phi_1 = x_1;
     double c = 1; 
@@ -212,21 +226,12 @@ void LS(hiperlife::FillStructure& fillStr)
     // mobility_=mobility_*threshold_mobility;
     tensor<double,1> f={0,0};
 
-    double directional_gradient =  v[0]*gphin[0] +  v[1]*gphin[1]; 
+    // double directional_gradient =  v[0]*gphin[0] +  v[1]*gphin[1]; 
+    // double s = (directional_gradient >= 0.0) ? 1.0 : -1.0;
 
-    K_stiff  += 1E5*(1 + tanh(100*(phin-6)));
-
-
-    if (directional_gradient<0  )
-    {
-        f(0) = advec_param*directional_gradient*v[1]/v_mag; 
-        f(1) = advec_param*directional_gradient*v[0]/v_mag;
-    }
-    else if (directional_gradient>0 )
-    {
-	    f(0) = -advec_param*directional_gradient*v[1]/v_mag;
-        f(1) = -advec_param*directional_gradient*v[0]/v_mag;
-    }
+    // only direction, no magnitude
+    f(0) = k_b*(u[0]-u_s[0]);
+    f(1) = k_b*(u[1]-u_s[1]);
 
     double alpha_log =1E-2;
     double phi_eps = std::max(phi, 1e-12);
@@ -282,36 +287,32 @@ void LS(hiperlife::FillStructure& fillStr)
 
     wrapper<double,2> Bk(fillStr.Bk(0).data(),eNN,DOF);
     wrapper<double,4> Ak(fillStr.Ak(0,0).data(),eNN,DOF,eNN,DOF);
-    tensor<double,2>  id2d = Identity(2);
     wrapper<double,2> nborCoords(subFill.nborCoords.data(),eNN,nDim);
-    wrapper<double,2> nborAuxF(subFill.nborAuxF.data(),eNN,DOF);
     wrapper<double,1> bf_(subFill.getDer(0),eNN);
     wrapper<double,2> Dbf_l(subFill.getDer(1),eNN,pDim);
-
 
     tensor<double,2> T = nborCoords(all,range(0,1)).T() * Dbf_l;
     //Global derivatives (wrt x and y ) of the basis functions
     tensor<double,2>  Dbf_g = Dbf_l*T.inv();
-    double f_mag2 = f*f;
-    tensor<double,2> P ={{0,0},{0,0}};
-    if (f_mag2>1E-6)
-    	P = outer(f,f)/f_mag2;
+    constexpr double threshold = 1e-6;
 
-    tensor<double,1> divP={0,0}; 
-    // tensor<double ,1 > u_  = {u[0], u[1]};
+    const double f_mag2 = f * f;
+
+    tensor<double, 2> P ={{0, 0 },{0, 0}};  // zero-initialized
+
+    if (f_mag2 >= threshold * threshold) {
+        P = outer(f, f) / f_mag2;
+}
+
     tensor<double,1> gphi_(2); 
     gphi_(0)  = gphi[0]; 
     gphi_(1)  = gphi[1];
-    wrapper<double,2> nborDOFs_(subFill.nborDOFs.data(),eNN,DOF);
-    wrapper<double,2> nborDOFs0_(subFill.nborDOFs0.data(),eNN,DOF);
 
-    tensor<double,2> M    = xi_2_*P(i,k)  -    xi_2_*xi_2_*P(i,m)*P(m,k)  +    xi_2_*xi_2_*xi_2_*P(i,m)*P(m,n)*P(n,k);
+    Bk(all ,0)(K)                  +=  jac*xi_2_*P(i,k)*(phi * ddW*Dbf_g(K,i)*gphi_(k)); 
+    Ak(all ,0,all,0)(K,L)          +=  jac*xi_2_*P(i,k)*(phi * ddW*Dbf_g(K,i)*Dbf_g(L,k)  + phi * dddW*bf_(L)*Dbf_g(K,i)*gphi_(k) + bf_(L)*ddW*Dbf_g(K,i)*gphi_(k)); 
 
-    Bk(all ,0)(K)                  +=  jac*xi_2_*M(i,k)*(phi * ddW*Dbf_g(K,i)*gphi_(k)); 
-    Ak(all ,0,all,0)(K,L)          +=  jac*xi_2_*M(i,k)*(phi * ddW*Dbf_g(K,i)*Dbf_g(L,k)  + phi * dddW*bf_(L)*Dbf_g(K,i)*gphi_(k) + bf_(L)*ddW*Dbf_g(K,i)*gphi_(k)); 
-
-    Bk(all ,0)(K)                  +=  jac* epsilon2_*( M(i,k)*gphi_(i)*Dbf_g(K,k)     ) ;
-    Ak(all ,0,all,0)(K,L)          +=  jac* epsilon2_*( M(i,k)*Dbf_g(L,i)*Dbf_g(K,k)   ) ; 
+    Bk(all ,0)(K)                  +=  jac* epsilon2_*( P(i,k)*gphi_(i)*Dbf_g(K,k)     ) ;
+    Ak(all ,0,all,0)(K,L)          +=  jac* epsilon2_*( P(i,k)*Dbf_g(L,i)*Dbf_g(K,k)   ) ; 
  
 }
 
@@ -430,8 +431,8 @@ void LS_v(hiperlife::FillStructure& fillStr)
     int nDim  = subFill.nDim;
     int pDim  = subFill.pDim;
     int auxF  = subFill.numAuxF;
-    double gamma  = 10.0;
-    double visc   = 0.01;
+    double gamma  = 200.0;
+    double visc   = 1;
     double fric_ = fric;
     double tau  = 1;
     double tau_2 = 1;
@@ -504,14 +505,9 @@ void LS_v(hiperlife::FillStructure& fillStr)
     //###############################  ACTIN CORTEX EQUATIONS ##############################//
     //#####################################################################################//
 
-    //[9.2] GRADIENT
-    // Bk(all,range(0,1))(K,k) +=   fric_*jac* bf(K)*v(k);
-    // // //[12.3] HESSIAN
-    // Ak(all,range(0,1),all,range(0,1))(K,k,L,l) += jac*fric_*(bf(K)*bf(L)*id2d(k,l))(K,k,L,l);
 
     // //[9.2] GRADIENT
     Bk(all,range(0,1))(K,k) +=  gamma*jac*d_divv(K,k);
-
     Bk(all,range(0,1))(K,k)           +=  jac * visc * (dv_rodt(K,k,m,n)*rodt(m,n))(K,k);
     // Bk(all,range(0,1))(K,k)           +=  jac * visc * divv*d_divv(K,k);
     // //   //[12.2] HESSIAN
@@ -521,15 +517,15 @@ void LS_v(hiperlife::FillStructure& fillStr)
     //#######################################################################################//   
     //###############################  FRICTION FORCE FROM ENV #############################//
     //#####################################################################################//
-    Bk(all,range(0,1))(K,k)                            +=    0.0000*fric_*jac* bf(K)*(v-v_star)(k);
-    Ak(all ,range(0,1),all ,range(0,1))(K,k,L,l)       +=    0.0000*fric_*jac* bf(K)*bf(L)*id2d(k,l);
+    Bk(all,range(0,1))(K,k)                            +=    fric_*jac* bf(K)*v(k);
+    Ak(all ,range(0,1),all ,range(0,1))(K,k,L,l)       +=    fric_*jac* bf(K)*bf(L)*id2d(k,l);
 
     //#######################################################################################//   
     //###############################  U-EQUATION ##########################################//
     //#####################################################################################//
     double f_mag = k_b*(u0(0)- us_0(0)) ;
 
-    double A = slip(f_mag,1);
+    double A = slip_rate(f_mag,1);
 
     if (A>300)
         A = 300;
@@ -539,9 +535,9 @@ void LS_v(hiperlife::FillStructure& fillStr)
     
     //if (c0<0.01)
     double alpha_ = (0.001 + 9999*(1.0 - tanh(10000 * (phi - 5.0))))/100.0;
-
-    tensor<double,1> dot_u      =  v(k)- alpha_*kon*u(k)   ;
-    tensor<double,3> du_dot_u   = -alpha_*kon*bf(K)*id2d(k,l);
+    //double alpha_ = 1e-9 + 0.5 * (kon_phi - 1e-9) * (1.0 - std::tanh(20.0 * (phi - x_m)));
+    tensor<double,1> dot_u      =  v(k)- alpha_*u(k)   ;
+    tensor<double,3> du_dot_u   = -alpha_*bf(K)*id2d(k,l);
     tensor<double,3> dv_dot_u   =  bf(K)*id2d(k,l);
     tensor<double,3> dus_dot_u  =  -bf(K)*id2d(k,l)/deltat_;
 
@@ -550,15 +546,14 @@ void LS_v(hiperlife::FillStructure& fillStr)
     Ak(all ,range(2,3),all ,range(2,3))(K,k,L,l)       +=     jac*bf(K)* (tau_2*bf(L)*id2d(k,l) - du_dot_u(L,k,l)*deltat_);
     //Ak(all ,range(2,3),all ,range(4,5))(K,k,L,l)       +=     -jac*bf(K)* dus_dot_u(L,k,l)*deltat;
 
-
     //#######################################################################################//   
     //###############################   FORCE FROM SUBSTRATE ###############################//
     //#####################################################################################//
 
-    Bk(all ,range(0,1))(K,k)                           -=    0.1*k_b*jac*bf(K)*phi*(us(k)-u(k))/(deltat_) ;
+    Bk(all ,range(0,1))(K,k)                           -=    k_b*jac*bf(K)*phi*(us(k)-u(k))/(deltat_*x_m) ;
 
-    Ak(all ,range(0,1),all ,range(2,3))(K,k,L,l)       +=    0.1*k_b*jac*bf(K)*phi*bf(L)*id2d(k,l)/(deltat_)     ;
-    Ak(all ,range(0,1),all ,range(4,5))(K,k,L,l)       -=    0.1*k_b*jac*bf(K)*phi*bf(L)*id2d(k,l)/(deltat_)      ;
+    Ak(all ,range(0,1),all ,range(2,3))(K,k,L,l)       +=    k_b*jac*bf(K)*phi*bf(L)*id2d(k,l)/(deltat_*x_m)     ;
+    Ak(all ,range(0,1),all ,range(4,5))(K,k,L,l)       -=    k_b*jac*bf(K)*phi*bf(L)*id2d(k,l)/(deltat_*x_m)      ;
 
     //#######################################################################################//   
     //###############################   CONSERVATION EQUATION C ############################//
@@ -570,20 +565,20 @@ void LS_v(hiperlife::FillStructure& fillStr)
     //###############################   ELASTICITY OF SUBSTRATE ############################//
     //#####################################################################################//
 
-    //Bk(all ,range(4,5))(K,k)                           +=    K_subs*jac*dvDv(K,k,m,n)* Du_s(m,n)/deltat;
-    //Ak(all ,range(4,5),all ,range(4,5))(K,k,L,l)       +=    K_subs*jac*dvDv(K,k,m,n)*dvDv(L,l,m,n)/deltat;
+    Bk(all ,range(4,5))(K,k)                           +=    K_subs*jac*dvDv(K,k,m,n)* Du_s(m,n)/deltat;
+    Ak(all ,range(4,5),all ,range(4,5))(K,k,L,l)       +=    K_subs*jac*dvDv(K,k,m,n)*dvDv(L,l,m,n)/deltat;
 
-    Bk(all ,range(4,5))(K,k)                           +=    bf(K)*K_subs*jac*us(l)* id2d(l,k)/deltat_;
-    Ak(all ,range(4,5),all ,range(4,5))(K,k,L,l)       +=    bf(K)*bf(L)*K_subs*jac*id2d(k,l)/deltat_;
+    //Bk(all ,range(4,5))(K,k)                           +=    bf(K)*K_subs*jac*us(l)* id2d(l,k)/deltat_;
+    //Ak(all ,range(4,5),all ,range(4,5))(K,k,L,l)       +=    bf(K)*bf(L)*K_subs*jac*id2d(k,l)/deltat_;
 
 
     //#######################################################################################//   
     //###############################   FORCE FROM LINKER TO SUBSTRATE #####################//
     //#####################################################################################//
 
-    Bk(all ,range(4,5))(K,k)                           -=    0.1*k_b*jac*phi*bf(K)*(u - us)(k)/(deltat_); 
-    Ak(all ,range(4,5),all ,range(2,3))(K,k,L,l)       -=    0.1*k_b*jac*phi*bf(K)*bf(L)*id2d(k,l)/(deltat_);
-    Ak(all ,range(4,5),all ,range(4,5))(K,k,L,l)       +=    0.1*k_b*jac*phi*bf(K)*bf(L)*id2d(k,l)/(deltat_);
+    Bk(all ,range(4,5))(K,k)                           -=    k_b*jac*phi*bf(K)*(u - us)(k)/(deltat_*x_m); 
+    Ak(all ,range(4,5),all ,range(2,3))(K,k,L,l)       -=    k_b*jac*phi*bf(K)*bf(L)*id2d(k,l)/(deltat_*x_m);
+    Ak(all ,range(4,5),all ,range(4,5))(K,k,L,l)       +=    k_b*jac*phi*bf(K)*bf(L)*id2d(k,l)/(deltat_*x_m);
     //Ak(all ,range(4,5),all ,6)(K,k,L)                  -=    k_b*jac*bf(L)*bf(K)*(u - us)(k)/deltat;
 
 }
@@ -612,7 +607,7 @@ int main(int argc, char *argv[])
     string oname_v = "velocity.";
     double maxTime  = 10000000;
     double maxNStep = 10000000;
-    double maxDelt  = 1E-2;
+    double maxDelt  = 1E-1;
     double stepFactor = 0.9;
     int nSave = 1;
     double width = 0.1; 
@@ -638,13 +633,16 @@ int main(int argc, char *argv[])
     loadedMesh->setElemType(ElemType::Triang);
     loadedMesh->setBasisFuncType(BasisFuncType::SubdivSurfs);
     loadedMesh->setBasisFuncOrder(bfOrder);
-    loadedMesh->loadMesh("/home/mirza/src/apps/endothelium_modelling/circle_n4.vtk",hiperlife::MeshType::Parallel);  
+    loadedMesh->loadMesh("/home/mirza/src/apps/endothelium_modelling/circle_n2.vtk",hiperlife::MeshType::Parallel);  
 
     // Create distributed mesh
     SmartPtr<DistributedMesh> disMesh = Create<DistributedMesh>();
     try
     {
-        disMesh->setMesh(structMesh);
+        if (flag_micropattern)
+            disMesh->setMesh(loadedMesh);
+        else
+            disMesh->setMesh(structMesh);         
         disMesh->Update();
 
         cout << disMesh->myRank() << ":   Distributed Mesh successfully created. " << endl;
@@ -751,19 +749,48 @@ int main(int argc, char *argv[])
 
 
     }
-    dhand_v->nodeDOFs->setValue("c",kon/(koff*slip(0,v_0))); 
+    dhand_v->nodeDOFs->setValue("c",kon/(koff*slip_rate(0,v_0))); 
+    if (flag_micropattern)
+    {
+        for (int i = 0; i < dhand->mesh->loc_nPts(); ++i)
+        {
+            double x = disMesh->nodeCoord(i, 0, IndexType::Local);
+            double y = disMesh->nodeCoord(i, 1, IndexType::Local);
+            double r = std::sqrt(x*x + y*y);
+            double d = 1 - r;  // distance from boundary
+            double vmag = v_0 * std::exp(-d / 0.5);
 
-    dhand_v->nodeDOFs->setValue("vx",v_0);
-    dhand_v->nodeDOFs->setValue("vy",0);
+            double vx = vmag * x / r;
+            double vy = vmag * y / r;
+
+            if (r>0.4)
+            {
+                dhand_v->nodeDOFs->setValue("vx", i, IndexType::Local,   vx);
+                dhand_v->nodeDOFs->setValue("vy", i, IndexType::Local,   vy);
+            }
+            else
+            {
+                dhand_v->nodeDOFs->setValue("vx", i, IndexType::Local,   0);
+                dhand_v->nodeDOFs->setValue("vy", i, IndexType::Local,   0);                
+            }
+
+        }
+    }
+    else
+    {
+        dhand_v->nodeDOFs->setValue("vx", v_0);
+        dhand_v->nodeDOFs->setValue("vy", 0); 
+        dhand_v->setConstraint("uy",0); 
+    }
+
     dhand_v->nodeDOFs->setValue("ux",0);
     dhand_v->nodeDOFs->setValue("uy",0);  
     dhand_v->nodeDOFs->setValue("us_x",0);   
     dhand_v->nodeDOFs->setValue("us_y",0); 
 
- 
-    dhand_v->setConstraint("vy",0);      
-    dhand_v->setConstraint("uy",0); 
-    dhand_v->setConstraint("vx",0);  
+    // dhand_v->setConstraint("vy",0);      
+    // dhand_v->setConstraint("vx",0);  
+
     dhand_v->setConstraint("us_x",0);   
     dhand_v->setConstraint("us_y",0);   
     dhand->UpdateGhosts();
@@ -779,11 +806,18 @@ int main(int argc, char *argv[])
 
         // Set Integration
         hiperProbl->setIntegration("Integ", {"dhand"});
-        hiperProbl->setCubatureGauss("Integ", gPts);
+        if (flag_micropattern)
+            hiperProbl->setCubatureGauss("Integ", 3);
+        else
+            hiperProbl->setCubatureGauss("Integ", gPts); 
+       
         hiperProbl->setElementFillings("Integ", LS);
         hiperProbl->setParameterStructure(userStr);
         hiperProbl->setIntegration("BorderInteg", {"dofHand"});
-        hiperProbl->setCubatureBorderGauss("BorderInteg",gPts);
+        if (flag_micropattern)
+            hiperProbl->setCubatureBorderGauss("BorderInteg",2);
+        else
+            hiperProbl->setCubatureBorderGauss("BorderInteg",gPts);        
         hiperProbl->setElementFillings("BorderInteg", LS_border);
 
 
@@ -812,7 +846,10 @@ int main(int argc, char *argv[])
 
         // Set Integration
         hiperProbl_v->setIntegration("Integ", {"dhand"});
-        hiperProbl_v->setCubatureGauss("Integ",4);
+        if (flag_micropattern)
+            hiperProbl_v->setCubatureGauss("Integ", 3);
+        else
+            hiperProbl_v->setCubatureGauss("Integ", 4); 
         hiperProbl_v->setParameterStructure(userStr);
         // hiperProbl->setElementFillings("Integ", ConsistencyCheck<LS>);
         hiperProbl_v->setElementFillings("Integ", LS_v);
