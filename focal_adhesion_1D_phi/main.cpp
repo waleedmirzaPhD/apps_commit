@@ -292,7 +292,7 @@ void LS(hiperlife::FillStructure& fillStr)
     wrapper<double,2> Dbf_l(subFill.getDer(1),eNN,pDim);
 
     tensor<double,2> T = nborCoords(all,range(0,1)).T() * Dbf_l;
-    //Global derivatives (wrt x and y ) of the basis functions
+    //Global derivatives (wrt x and y )  of the basis functions
     tensor<double,2>  Dbf_g = Dbf_l*T.inv();
     constexpr double threshold = 1e-6;
 
