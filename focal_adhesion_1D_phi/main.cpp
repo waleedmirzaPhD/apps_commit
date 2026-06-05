@@ -63,19 +63,21 @@ static double koff_phi = 10;
 static double deltat   = 1E-5;
 static double dt_scale_v = 1e2;
 static double mobility = 0.068;
-static double epsilon2 = 2E-5; //diffusion in the phase field model.
+static double tanh_sharpness = 2.0;  // transition width = tanh_sharpness * h_e in argument space
+static double epsilon2      = 2E-5; // isotropic gradient energy (perpendicular to fibers)
+static double epsilon2_para = 10E-5; // extra gradient energy along fiber/force direction
 static double x_0 = 5;
 static double x_1 = 6;
 static double x_m = 5.5;
 static int flag_domain_type = 3;   // 1 for biperiodic, 2 for sector and 3 for circle
-static double xi_2          =    0.00;
+static double xi_2          =    -2.0;
 static double theta         = 30.*M_PI/180.;
 static double fric          = 0.01;
 static double k_b           = 1;
 static double K_subs        = 0.5;
 static double alpha_1       = 3.0;
 static double alpha_2       = 3.; 
-static double v_0           = 20;
+static double v_0           = 40;
 static double D_u           = 0.3; //=== diffusion of the u-field
 static double beta0         = 0.0;
 bool flag_micropattern      = 0.0;
@@ -152,6 +154,8 @@ void LS(hiperlife::FillStructure& fillStr)
     std::vector<double> gNa(eNN*pDim), hNa(eNN*pDim*pDim), lapNa(eNN);
     GlobalBasisFunctions::hessians(gNa.data(), jac, hNa.data(), lapNa.data(), subFill);
     GlobalBasisFunctions::hessians(gNa_.data(), jac, hNa_.data(), lapNa_.data(), subFill);
+    double h_e_ls  = std::sqrt(std::abs(jac));
+    double steep_ls = 100; //tanh_sharpness / h_e_ls;
 
     // Values at integration points
     std::vector<double> x(pDim), gphi(pDim), gphin(pDim);
@@ -195,7 +199,6 @@ void LS(hiperlife::FillStructure& fillStr)
     double f_mag = sqrt(fx_*fx_ + fy_*fy_);
     double A = slip_rate(f_mag,1);
     double A_catch = catch_rate(f_mag,1);
-    double xi_2_ = xi_2*f_mag/(4.0*A_catch);
     double chi_ = chi/A_catch;
 
     v_mag = sqrt(v[0]*v[0] + v[1]*v[1]);
@@ -206,13 +209,15 @@ void LS(hiperlife::FillStructure& fillStr)
 
     double phi_0 = x_0;
     double phi_1 = x_1;
-    double fa_maturity    = 0.5*(1.0 + tanh(100*(phin - 1.5*x_m)));
+    double fa_maturity    = 0.5*(1.0 + tanh(steep_ls * (phin - 1.5*x_m)));
     double threshold_mobility = 1.0 - fa_maturity;
+    double xi_2_ = (xi_2 * f_mag /A_catch) * threshold_mobility;
     double blend = (1.0 - fa_maturity) * A + fa_maturity;
     double koff_ = koff_phi*A;
     double kon_  = kon_phi;
     mobility_  *= threshold_mobility;
     epsilon2_  *= (threshold_mobility + 1E-3*fa_maturity);
+    double epsilon2_para_ = epsilon2_para * (threshold_mobility + 1E-3*fa_maturity);
     tensor<double,1> f={0,0};
 
     // double directional_gradient =  v[0]*gphin[0] +  v[1]*gphin[1]; 
@@ -298,8 +303,8 @@ void LS(hiperlife::FillStructure& fillStr)
     Bk(all ,0)(K)                  +=  jac*xi_2_*P(i,k)*(phi * ddW*Dbf_g(K,i)*gphi_(k)); 
     Ak(all ,0,all,0)(K,L)          +=  jac*xi_2_*P(i,k)*(phi * ddW*Dbf_g(K,i)*Dbf_g(L,k)  + phi * dddW*bf_(L)*Dbf_g(K,i)*gphi_(k) + bf_(L)*ddW*Dbf_g(K,i)*gphi_(k)); 
 
-    Bk(all ,0)(K)                  +=  jac* epsilon2_*( P(i,k)*gphi_(i)*Dbf_g(K,k)     ) ;
-    Ak(all ,0,all,0)(K,L)          +=  jac* epsilon2_*( P(i,k)*Dbf_g(L,i)*Dbf_g(K,k)   ) ;
+    Bk(all ,0)(K)                  +=  jac* epsilon2_para_*( P(i,k)*gphi_(i)*Dbf_g(K,k)     ) ;
+    Ak(all ,0,all,0)(K,L)          +=  jac* epsilon2_para_*( P(i,k)*Dbf_g(L,i)*Dbf_g(K,k)   ) ;
  
 }
 
@@ -466,7 +471,9 @@ void LS_v(hiperlife::FillStructure& fillStr)
 
     tensor<double,2> Dv          =  (nbor_v(K,m)*Dbf_g(K,n))(m,n);
 
-    double jac = T.det();
+    double jac     = T.det();
+    double h_e_v   = std::sqrt(std::abs(jac));
+    double steep_v = 100;//tanh_sharpness / h_e_v;
 
     tensor<double,4> dvDv = (Dbf_g(K,n)*id2d(m,k))(K,k,m,n) ; 
     tensor<double,2> d_divv  =  (dvDv(K,k,l,m)*id2d(l,m))(K,k);
@@ -512,7 +519,7 @@ void LS_v(hiperlife::FillStructure& fillStr)
     // beta_reset: forces u→0 outside FAs (phi near x_0), zero inside FA (phi near x_1)
     double phi_reset   = x_0 + 0.45*(x_1 - x_0);   // = 5.45, just below x_m=5.5
     double width_reset = 0.05*(x_1 - x_0);          // = 0.05
-    double blend_u     = 0.5*(1.0 + tanh((phi - phi_reset)/width_reset));
+    double blend_u     = 0.5*(1.0 + tanh(steep_v * (phi - phi_reset)));
     double beta_reset  = beta0 * (1.0 - blend_u);
 
     Bk(all,range(4,5))(K,k) += jac * bf(K) * ((u(k) - u0(k))/deltat_u + (alpha_detach + beta_reset)*u(k) - v(k));
@@ -526,10 +533,10 @@ void LS_v(hiperlife::FillStructure& fillStr)
 
     // M(φ)·∇μ·∇u advection  — full ∇μ = W''∇φ − ε²∇(∇²φ)
     // PDE: du/dt = −M∇μ·∇u + …  →  residual: +∫ N·M·∇μ·∇u dΩ
-    double fa_mat_v         = 0.5*(1.0 + std::tanh(100.0*(phi - 1.5*x_m)));
+    double fa_mat_v         = 0.5*(1.0 + std::tanh(steep_v * (phi - 1.5*x_m)));
     double mob_v            = mobility * (1.0 - fa_mat_v);
-    double tanh_v           = std::tanh(100.0*(phi - 1.5*x_m));
-    double dM_dphi_v        = -mobility * 50.0 * (1.0 - tanh_v*tanh_v);   // dM/dφ
+    double tanh_v           = std::tanh(steep_v * (phi - 1.5*x_m));
+    double dM_dphi_v        = -mobility * (steep_v/2.0) * (1.0 - tanh_v*tanh_v);   // dM/dφ
     double ddW_v            = (12.0*std::pow(phi-x_0,2) + 12.0*std::pow(x_1-phi,2)) / 12.0 + chi;
     tensor<double,1> gphi_v = Dbf_g(K,n) * nbor_phi(K);   // ∇φ at Gauss point
 
@@ -579,7 +586,7 @@ int main(int argc, char *argv[])
     ElemType eType = ElemType::Square;
     int bfOrder = 2;
     int gPts = pow(bfOrder+1, computePDim(eType));
-    int nEl = 50;
+    int nEl = 100;
 
     // Time-related parameters
     string oname   = "integrin.";
@@ -590,7 +597,7 @@ int main(int argc, char *argv[])
     double stepFactor = 0.9;
     int nSave = 5;
     double width = 0.1; 
-    double L = 0.3;
+    double L = 0.5;
 
     SmartPtr<ParamStructure> userStr   = Create<ParamStructure>() ;
     userStr->dparam.resize(50);
