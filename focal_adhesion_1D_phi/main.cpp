@@ -57,66 +57,71 @@ file LICENSE or https://opensource.org/license/gpl-3-0.
 #include <cmath>
 
 
-static double chi      = -1; //==> change this
-static double kon  = 2.0;
-static double koff = 1;
+static double chi      = -6.5; //==Fix this
 static double kon_phi  = 100.0;
 static double koff_phi = 10;
-static double deltat   = 1E-4;
-static double mobility = 0.0675;
-static double epsilon2 = 5E-5;
-static double offset  =  5.0;  ; 
-static double x_0 = 0 + offset; 
-static double x_1 = 1 + offset; 
-static double x_m = 0.5*(x_0 +x_1); 
+static double deltat   = 1E-5;
+static double dt_scale_v = 1e2;
+static double mobility = 0.068;
+static double epsilon2 = 2E-5; //diffusion in the phase field model.
+static double x_0 = 5;
+static double x_1 = 6;
+static double x_m = 5.5;
 static int flag_domain_type = 3;   // 1 for biperiodic, 2 for sector and 3 for circle
-static double xi_2 =    -0.07;
-static double theta      = 30.*M_PI/180.;
-static double  fric      = 100.0;
-static double k_b        = 1;
-static double K_subs     = 0.5;
-static double alpha_1    = 3.0;
-static double alpha_2    = 3.; 
-static double v_0        = 10.0;
-bool flag_micropattern   = 1.0; 
+static double xi_2          =    0.00;
+static double theta         = 30.*M_PI/180.;
+static double fric          = 0.01;
+static double k_b           = 1;
+static double K_subs        = 0.5;
+static double alpha_1       = 3.0;
+static double alpha_2       = 3.; 
+static double v_0           = 20;
+static double D_u           = 0.3; //=== diffusion of the u-field
+static double beta0         = 0.0;
+bool flag_micropattern      = 0.0;
+bool flag_u_quasistatic     = false;  // true: u = v/alpha(phi) instantly (no drift, no oscillations — diagnostic)
+
 
 double addGaussianNoise(double mean, double stddev)
 {
-
     std::random_device rd; //Seed for the random number engine
     std::mt19937 generator(rd());   // Mersenne Twister generator
     std::normal_distribution<double> distribution(mean,stddev);
-
     return distribution(generator); 
-
 }
+
+
+// double slip_rate(double f, double v0)
+// {
+//     // Catch-slip parameters (nondimensional, biologically reasonable)
+//     const double kc = 1.0;    // catch amplitude
+//     const double ks = 0.35;   // slip amplitude (smaller than catch)
+//     const double ac = 35.0;   // catch sensitivity (gentler)
+//     const double as = 80.0;   // slip sensitivity (steeper)
+//     const double fc = 0.05;   // slip activation scale
+//     return kc * std::exp(-ac * f) + ks * std::exp(as * (f - fc));
+// }
+
 
 double  slip_rate(double f,double v0)
 {
-    // double f_offset_1 = 2.0;
-    // double f_offset_2 = 3.6;   
-    // return exp(0.3*pow(f-f_offset_1,2)) -0.9 +  0*exp(alpha_2*(f-f_offset_2));
-
-
     double f_offset_1 = 0.0;
-    double f_offset_2 = 3.0;   
-    return exp(-alpha_1*(f-f_offset_1))  +  exp(alpha_2*(f-f_offset_2));
-
+    double f_offset_2 = 0.05;
+    // Scale < 0.5 pushes minimum below 1 (catch regime at f ≈ 0.005)
+    double scale = 1;
+    double A = scale * (exp(-1000*(f-f_offset_1)) + exp(1000*(f-f_offset_2)));
+    return std::min(A, 1e6);
 }
+
 
 double  catch_rate(double f,double v0)
 {
-    // double f_offset_1 = 2.0;
-    // double f_offset_2 = 3.6;   
-    // return exp(0.3*pow(f-f_offset_1,2)) -0.9 +  0*exp(alpha_2*(f-f_offset_2));
-    double A = exp(-10*f);
-    if (A<0.3333)
-        return 0.3333;
-    else 
-        return A;
+
+    double A = 1; //exp(-3*f);
+    if (A<0.5)
+        return 0.5;
+     return A;
 }
-
-
 
 void LS(hiperlife::FillStructure& fillStr)
 {
@@ -175,55 +180,39 @@ void LS(hiperlife::FillStructure& fillStr)
         for (int d = 0; d < pDim; d++)
         {
             gphi[d]  += ue_nodes[DOF*i+0] * gNa[pDim*i+d];
-            gphin[d] += ue_nodes0[DOF*i+0] * gNa[pDim*i+d];   
-            gq1[d]   += aux_nodes[auxF*i+6] * gNa[pDim*i+d];   
-            gq2[d]   += aux_nodes[auxF*i+7] * gNa[pDim*i+d];   
+            gphin[d] += ue_nodes0[DOF*i+0] * gNa[pDim*i+d];    
         }
         // Hessians
         for (int d = 0; d < pDim; d++)
             lapphi += ue_nodes[i] * hNa[pDim*pDim*i+pDim*d+d];
     }
-    // v[0]  = 1 ; 
-    // v[1]  = 0 ;
+
     double v_mag = sqrt(v[0]*v[0] + v[1]*v[1]);
     double u_mag = sqrt(u[0]*u[0] + u[1]*u[1]);
     double us_mag = sqrt(u_s[0]*u_s[0] + u_s[1]*u_s[1]);
-    double f_mag = abs(k_b*(u_mag-us_mag));
+    double fx_ = k_b*(u[0]-u_s[0]);
+    double fy_ = k_b*(u[1]-u_s[1]);
+    double f_mag = sqrt(fx_*fx_ + fy_*fy_);
     double A = slip_rate(f_mag,1);
     double A_catch = catch_rate(f_mag,1);
     double xi_2_ = xi_2*f_mag/(4.0*A_catch);
     double chi_ = chi/A_catch;
 
-    // if (A<1)
-    // {
-    //     // chi_ = chi; 
-    //     xi_2_ = xi_2;
-    // }
-
-    // if (A>10)
-    // {
-    //     A=5E2;
-    //     chi_ = 0;
-    //     xi_2_ = 0 ;
-    // } 
-    // v[0] =  
-    // v[1] =  0;
     v_mag = sqrt(v[0]*v[0] + v[1]*v[1]);
     double r    = sqrt(x[0]*x[0] +  x[1]*x[1]);
-    double kon_ = kon_phi;
-    double koff_= koff_phi*A; 
+    // double kon_cutoff = 0.5*(1.0 - tanh((phin - x_m)));
     double mobility_ = mobility;
     double epsilon2_  = epsilon2;
 
-
-    double advec_param = 1 ; //3E-5;
-    double phi_0 = x_0; 
+    double phi_0 = x_0;
     double phi_1 = x_1;
-    double c = 1; 
-    double K_stiff =  c*fric;
-    double phi_threshold = 9; 
-    double threshold_mobility =  1.0 - 0.5*(1+tanh(20*(phin-phi_threshold)));
-    // mobility_=mobility_*threshold_mobility;
+    double fa_maturity    = 0.5*(1.0 + tanh(100*(phin - 1.5*x_m)));
+    double threshold_mobility = 1.0 - fa_maturity;
+    double blend = (1.0 - fa_maturity) * A + fa_maturity;
+    double koff_ = koff_phi*A;
+    double kon_  = kon_phi;
+    mobility_  *= threshold_mobility;
+    epsilon2_  *= (threshold_mobility + 1E-3*fa_maturity);
     tensor<double,1> f={0,0};
 
     // double directional_gradient =  v[0]*gphin[0] +  v[1]*gphin[1]; 
@@ -233,7 +222,7 @@ void LS(hiperlife::FillStructure& fillStr)
     f(0) = k_b*(u[0]-u_s[0]);
     f(1) = k_b*(u[1]-u_s[1]);
 
-    double alpha_log =1E-2;
+    double alpha_log =0*1E-2;
     double phi_eps = std::max(phi, 1e-12);
 
     // log lower-bound penalty
@@ -248,13 +237,10 @@ void LS(hiperlife::FillStructure& fillStr)
     double ddW_sub = (12*pow((phi-phi_0),2)  +  12*pow(phi_1-phi,2))/12.0+ ddW_log ;
     double dddW_sub= (24*(phi-phi_0)  -  24*(phi_1-phi))/12.0 + dddW_log;
 
-
-
     double W = W_sub + 0.5 * chi_ * (phi-phi_0) * (phi-phi_0) ;
     double dW = dW_sub + chi_ * (phi-phi_0)    ;
     double ddW = ddW_sub  + chi_  ;
     double dddW = dddW_sub  ;
-
     // Fill
     for (int i = 0; i < eNN; i++)
     {
@@ -274,13 +260,14 @@ void LS(hiperlife::FillStructure& fillStr)
             }
             // Fill Ak
             fillStr.Ak(0, 0)[i*DOF*eNN+j*DOF] += jac * Na[i] * (Na[j] * (1./deltat_)   );
+            fillStr.Ak(0, 0)[i*DOF*eNN+j*DOF] += jac * Na[i] * Na[j] * (kon_ + koff_);
             fillStr.Ak(0, 0)[i*DOF*eNN+j*DOF] += jac * mobility_ * (ddW + phi * dddW) * Na[j] * gNagphi;
             fillStr.Ak(0, 0)[i*DOF*eNN+j*DOF] += jac * mobility_ * phi * ddW * gNagNb;
             fillStr.Ak(0, 0)[i*DOF*eNN+j*DOF] += jac * epsilon2_ * ((phi * lapNa[i] + gNagphi) * lapNa[j] + (lapNa[i] * Na[j] + gNagNb) * lapphi);
 
         }
         // Fill RHS
-        fillStr.Bk(0)[i*DOF] += jac * ( Na[i] * ((phi-phin) / deltat_   - kon_*(x_m-phin) + koff_ * phin ) + mobility_ * (phi * ddW * gNagphi) + epsilon2_ * (phi * lapNa[i] + gNagphi) * lapphi     );
+        fillStr.Bk(0)[i*DOF] += jac * ( Na[i] * ((phi-phin) / deltat_   - kon_*std::max(x_m-phi,0.) + koff_ * phi ) + mobility_ * (phi * ddW * gNagphi) + epsilon2_ * (phi * lapNa[i] + gNagphi) * lapphi     );
 
     }
 
@@ -312,11 +299,9 @@ void LS(hiperlife::FillStructure& fillStr)
     Ak(all ,0,all,0)(K,L)          +=  jac*xi_2_*P(i,k)*(phi * ddW*Dbf_g(K,i)*Dbf_g(L,k)  + phi * dddW*bf_(L)*Dbf_g(K,i)*gphi_(k) + bf_(L)*ddW*Dbf_g(K,i)*gphi_(k)); 
 
     Bk(all ,0)(K)                  +=  jac* epsilon2_*( P(i,k)*gphi_(i)*Dbf_g(K,k)     ) ;
-    Ak(all ,0,all,0)(K,L)          +=  jac* epsilon2_*( P(i,k)*Dbf_g(L,i)*Dbf_g(K,k)   ) ; 
+    Ak(all ,0,all,0)(K,L)          +=  jac* epsilon2_*( P(i,k)*Dbf_g(L,i)*Dbf_g(K,k)   ) ;
  
 }
-
-
 
 
 
@@ -431,7 +416,7 @@ void LS_v(hiperlife::FillStructure& fillStr)
     int nDim  = subFill.nDim;
     int pDim  = subFill.pDim;
     int auxF  = subFill.numAuxF;
-    double gamma  = 200.0;
+    double gamma  = 20.0;
     double visc   = 1;
     double fric_ = fric;
     double tau  = 1;
@@ -439,7 +424,7 @@ void LS_v(hiperlife::FillStructure& fillStr)
     // double gamma  = 0.0109/5.5;
     // double visc   = 0.001;
     tensor<double,1> v_star = {v_0,0};
-    double deltat_       =   1E2*fillStr.paramStr->dparam[0];   
+    double deltat_       =   dt_scale_v*fillStr.paramStr->dparam[0];
 
     // Rename variables for the main dofsHandler
     int numAuxF = subFill.numAuxF;
@@ -460,34 +445,24 @@ void LS_v(hiperlife::FillStructure& fillStr)
     tensor<double,2> Tinv    =  T.inv();   
 
     tensor<double,2> Dbf_g      =  Dbf_l(K,k)*Tinv(k,l);
-    tensor<double,2> nbor_v     =  nborDOFs(all,range(0,1));
-    tensor<double,2> nbor0_v     =  nborDOFs0(all,range(0,1));
-    tensor<double,1> nbor_phi    =  nborauxF(all,0);
-    tensor<double,1>  u  =  bf(K)* nborDOFs(all,range(2,3))(K,k);
-    tensor<double,1>  x  =  bf(K)* nborCoords(all,range(0,2))(K,k);
-    tensor<double,1>  u0 =  bf(K)* nborDOFs0(all,range(2,3))(K,k);
-    double u0_mag = sqrt(u0(k)*u0(k));
-    tensor<double,1> v       =  bf(K) * nbor_v(K,k);
-    tensor<double,1> v0      =  bf(K) * nbor0_v(K,k);
+    tensor<double,2> nbor_v      = nborDOFs(all,range(0,1));
+    tensor<double,2> nbor0_v    = nborDOFs0(all,range(0,1));
+    tensor<double,1> nbor_phi   = nborauxF(all,0);
+    tensor<double,1> v          = bf(K) * nbor_v(K,k);
+    tensor<double,1> v0         = bf(K) * nbor0_v(K,k);
 
-    double v0_mag = sqrt(v0(k)*v0(k));
+    tensor<double,2> nbor_us    = nborDOFs(all,range(2,3));
+    tensor<double,2> nbor0_us   = nborDOFs0(all,range(2,3));
+    tensor<double,1> us         = bf(K)* nbor_us(K,k);
+    tensor<double,1> us_0       = bf(K)* nbor0_us(K,k);
 
+    // u is now a DOF (indices 4,5) — solved by FEM, not by pointwise loop
+    tensor<double,2> nbor_u     = nborDOFs(all,range(4,5));
+    tensor<double,2> nbor0_u    = nborDOFs0(all,range(4,5));
+    tensor<double,1> u          = bf(K)* nbor_u(K,k);
+    tensor<double,1> u0         = bf(K)* nbor0_u(K,k);
 
-    tensor<double,2> nbor_us      =  nborDOFs(all,range(4,5)); 
-    tensor<double,2> nbor0_us     =  nborDOFs0(all,range(4,5));  
-    
-    tensor<double,1>  us          =  bf(K)* nbor_us(K,k);
-    tensor<double,1>  us_0        =  bf(K)* nbor0_us(K,k);
-    tensor<double,1>  v_s          = (us-us_0)/deltat_;
-    tensor<double,2> Du_s  =  (nbor_us(K,m)*Dbf_g(K,n))(m,n);    
-    double us0_mag = sqrt(us_0(k)*us_0(k));
-
-    double phi     =  bf(K) * nbor_phi(K);
-
-    tensor<double,1> nbor0_c     =  nborDOFs0(all,6);
-    tensor<double,1> nbor_c      =  nborDOFs(all,6);
-    double c0     =  bf(K) * nbor0_c(K);
-    double c      =  bf(K) * nbor_c(K);    
+    double phi = bf(K) * nbor_phi(K);
 
     tensor<double,2> Dv          =  (nbor_v(K,m)*Dbf_g(K,n))(m,n);
 
@@ -514,72 +489,76 @@ void LS_v(hiperlife::FillStructure& fillStr)
     Ak(all,range(0,1),all,range(0,1))(K,k,L,l) +=  jac * visc * dv_rodt(K,k,m,n)*dv_rodt(L,l,m,n);
     // Ak(all,range(0,1),all,range(0,1))(K,k,L,l) +=  jac * visc * d_divv(L,l)*d_divv(K,k);
 
-    //#######################################################################################//   
+    //#######################################################################################//
     //###############################  FRICTION FORCE FROM ENV #############################//
     //#####################################################################################//
     Bk(all,range(0,1))(K,k)                            +=    fric_*jac* bf(K)*v(k);
     Ak(all ,range(0,1),all ,range(0,1))(K,k,L,l)       +=    fric_*jac* bf(K)*bf(L)*id2d(k,l);
 
-    //#######################################################################################//   
-    //###############################  U-EQUATION ##########################################//
+    //#######################################################################################//
+    //###############################  BOND FORCE ON ACTIN  ################################//
+    // ∂(k_b|u|²)/∂u = k_b·u  →  body force on actin from stretched integrin bonds
     //#####################################################################################//
-    double f_mag = k_b*(u0(0)- us_0(0)) ;
-
-    double A = slip_rate(f_mag,1);
-
-    if (A>300)
-        A = 300;
-
-    double       dot_c   = kon  - koff*A*c ;
-    tensor<double,1> dc_dot_c = - koff*A*bf(K);
-    
-    //if (c0<0.01)
-    double alpha_ = (0.001 + 9999*(1.0 - tanh(10000 * (phi - 5.0))))/100.0;
-    //double alpha_ = 1e-9 + 0.5 * (kon_phi - 1e-9) * (1.0 - std::tanh(20.0 * (phi - x_m)));
-    tensor<double,1> dot_u      =  v(k)- alpha_*u(k)   ;
-    tensor<double,3> du_dot_u   = -alpha_*bf(K)*id2d(k,l);
-    tensor<double,3> dv_dot_u   =  bf(K)*id2d(k,l);
-    tensor<double,3> dus_dot_u  =  -bf(K)*id2d(k,l)/deltat_;
-
-    Bk(all ,range(2,3))(K,k)                           +=     jac*bf(K)* (tau_2*(u-u0) - dot_u*deltat_)(k);
-    Ak(all ,range(2,3),all ,range(0,1))(K,k,L,l)       +=    -jac*bf(K)*dv_dot_u(L,k,l)*deltat_;
-    Ak(all ,range(2,3),all ,range(2,3))(K,k,L,l)       +=     jac*bf(K)* (tau_2*bf(L)*id2d(k,l) - du_dot_u(L,k,l)*deltat_);
-    //Ak(all ,range(2,3),all ,range(4,5))(K,k,L,l)       +=     -jac*bf(K)* dus_dot_u(L,k,l)*deltat;
-
-    //#######################################################################################//   
-    //###############################   FORCE FROM SUBSTRATE ###############################//
+    Bk(all,range(0,1))(K,k)                            +=   phi*jac* bf(K) * k_b * u(k)/(deltat_*x_m);
+    Ak(all,range(0,1),all,range(4,5))(K,k,L,l)         +=   phi*jac* bf(K) * bf(L) * k_b * id2d(k,l)/(deltat_*x_m);
+    //#######################################################################################//
+    //###############################  ADHESION DISPLACEMENT u  ############################//
+    // du/dt = v - alpha_detach*u   (backward Euler, phi timestep)
     //#####################################################################################//
+    double deltat_u     = fillStr.paramStr->dparam[0];
+    double phi_arrest   = x_m;  // separate from x_m: only mature FAs (phi > x_1) suppress alpha_detach
+    double alpha_detach = 1E-6 + 1000*kon_phi * std::max(phi_arrest - phi, 0.0)/std::max(phi, 1e-6);
+    //double alpha_detach = 1E-6 + 1000*(1.0 - tanh(10000 * (phi - 4.0)));
+    // beta_reset: forces u→0 outside FAs (phi near x_0), zero inside FA (phi near x_1)
+    double phi_reset   = x_0 + 0.45*(x_1 - x_0);   // = 5.45, just below x_m=5.5
+    double width_reset = 0.05*(x_1 - x_0);          // = 0.05
+    double blend_u     = 0.5*(1.0 + tanh((phi - phi_reset)/width_reset));
+    double beta_reset  = beta0 * (1.0 - blend_u);
 
-    Bk(all ,range(0,1))(K,k)                           -=    k_b*jac*bf(K)*phi*(us(k)-u(k))/(deltat_*x_m) ;
+    Bk(all,range(4,5))(K,k) += jac * bf(K) * ((u(k) - u0(k))/deltat_u + (alpha_detach + beta_reset)*u(k) - v(k));
+    Ak(all,range(4,5),all,range(4,5))(K,k,L,l) += jac * bf(K) * bf(L) * (1.0/deltat_u + alpha_detach + beta_reset) * id2d(k,l);
+    Ak(all,range(4,5),all,range(0,1))(K,k,L,l) -= jac * bf(K) * bf(L) * id2d(k,l);
 
-    Ak(all ,range(0,1),all ,range(2,3))(K,k,L,l)       +=    k_b*jac*bf(K)*phi*bf(L)*id2d(k,l)/(deltat_*x_m)     ;
-    Ak(all ,range(0,1),all ,range(4,5))(K,k,L,l)       -=    k_b*jac*bf(K)*phi*bf(L)*id2d(k,l)/(deltat_*x_m)      ;
+    // Diffusion of u: D_u * ∫ ∇N_K · ∇u dΩ
+    tensor<double,2> Du = (nbor_u(K,k)*Dbf_g(K,n))(k,n);
+    Bk(all,range(4,5))(K,k) += jac * D_u * (Dbf_g(K,n) * Du(k,n));
+    Ak(all,range(4,5),all,range(4,5))(K,k,L,l) += jac * D_u * Dbf_g(K,n) * Dbf_g(L,n) * id2d(k,l);
 
-    //#######################################################################################//   
-    //###############################   CONSERVATION EQUATION C ############################//
-    //#####################################################################################//
+    // M(φ)·∇μ·∇u advection  — full ∇μ = W''∇φ − ε²∇(∇²φ)
+    // PDE: du/dt = −M∇μ·∇u + …  →  residual: +∫ N·M·∇μ·∇u dΩ
+    double fa_mat_v         = 0.5*(1.0 + std::tanh(100.0*(phi - 1.5*x_m)));
+    double mob_v            = mobility * (1.0 - fa_mat_v);
+    double tanh_v           = std::tanh(100.0*(phi - 1.5*x_m));
+    double dM_dphi_v        = -mobility * 50.0 * (1.0 - tanh_v*tanh_v);   // dM/dφ
+    double ddW_v            = (12.0*std::pow(phi-x_0,2) + 12.0*std::pow(x_1-phi,2)) / 12.0 + chi;
+    tensor<double,1> gphi_v = Dbf_g(K,n) * nbor_phi(K);   // ∇φ at Gauss point
 
-    Bk(all ,6)(K)                                      +=    jac*bf(K)*( tau*(c-c0)  -  dot_c*deltat_);
-    Ak(all ,6,all,6)(K,L)                              +=    jac*bf(K)*( tau*bf    -  dc_dot_c*deltat_)(L);
-    //#######################################################################################//   
-    //###############################   ELASTICITY OF SUBSTRATE ############################//
-    //#####################################################################################//
+    // W'' part: +∫ N·M·W''·∇φ·∇u dΩ
+    Bk(all,range(4,5))(K,k)            += jac * bf(K) * mob_v * ddW_v * (gphi_v(n) * Du(k,n));
+    Ak(all,range(4,5),all,range(4,5))(K,k,L,l) += jac * bf(K) * mob_v * ddW_v * (gphi_v(n) * Dbf_g(L,n)) * id2d(k,l);
 
-    Bk(all ,range(4,5))(K,k)                           +=    K_subs*jac*dvDv(K,k,m,n)* Du_s(m,n)/deltat;
-    Ak(all ,range(4,5),all ,range(4,5))(K,k,L,l)       +=    K_subs*jac*dvDv(K,k,m,n)*dvDv(L,l,m,n)/deltat;
+    // ε² part after IBP: -∫ N·M·ε²·∇(∇²φ)·∇u  →  +∫ ε²·∇²φ·[M·∇N·∇u + N·dM/dφ·∇φ·∇u + N·M·∇²u]
+    {
+        tensor<double,1> lapNa_v(eNN);
+        tensor<double,2> gNa_tmp(eNN, pDim);
+        tensor<double,3> hNa_tmp(eNN, pDim, pDim);
+        double jac_tmp;
+        GlobalBasisFunctions::hessians(gNa_tmp.data(), jac_tmp, hNa_tmp.data(), lapNa_v.data(), subFill);
 
-    //Bk(all ,range(4,5))(K,k)                           +=    bf(K)*K_subs*jac*us(l)* id2d(l,k)/deltat_;
-    //Ak(all ,range(4,5),all ,range(4,5))(K,k,L,l)       +=    bf(K)*bf(L)*K_subs*jac*id2d(k,l)/deltat_;
+        double            laphi_v = lapNa_v(K) * nbor_phi(K);          // ∇²φ
+        tensor<double,1>  lapu_v  = lapNa_v(K) * nbor_u(K,k);          // ∇²u_k
 
-
-    //#######################################################################################//   
-    //###############################   FORCE FROM LINKER TO SUBSTRATE #####################//
-    //#####################################################################################//
-
-    Bk(all ,range(4,5))(K,k)                           -=    k_b*jac*phi*bf(K)*(u - us)(k)/(deltat_*x_m); 
-    Ak(all ,range(4,5),all ,range(2,3))(K,k,L,l)       -=    k_b*jac*phi*bf(K)*bf(L)*id2d(k,l)/(deltat_*x_m);
-    Ak(all ,range(4,5),all ,range(4,5))(K,k,L,l)       +=    k_b*jac*phi*bf(K)*bf(L)*id2d(k,l)/(deltat_*x_m);
-    //Ak(all ,range(4,5),all ,6)(K,k,L)                  -=    k_b*jac*bf(L)*bf(K)*(u - us)(k)/deltat;
+        Bk(all,range(4,5))(K,k) += jac * epsilon2 * laphi_v * (
+              mob_v    * (Dbf_g(K,n) * Du(k,n))
+            + bf(K) * dM_dphi_v * (gphi_v(n) * Du(k,n))
+            + bf(K) * mob_v     * lapu_v(k)
+        );
+        Ak(all,range(4,5),all,range(4,5))(K,k,L,l) += jac * epsilon2 * laphi_v * (
+              mob_v    * (Dbf_g(K,n) * Dbf_g(L,n)) * id2d(k,l)
+            + bf(K) * dM_dphi_v * (gphi_v(n) * Dbf_g(L,n)) * id2d(k,l)
+            + bf(K) * mob_v     * lapNa_v(L)        * id2d(k,l)
+        );
+    }
 
 }
 
@@ -596,22 +575,22 @@ int main(int argc, char *argv[])
     const int myRank = hiperlife::MyRank();
 
     // Mesh-related parameters
-    BasisFuncType bfType = BasisFuncType::BSplines;
+    BasisFuncType bfType = BasisFuncType::BSplines; 
     ElemType eType = ElemType::Square;
     int bfOrder = 2;
     int gPts = pow(bfOrder+1, computePDim(eType));
-    int nEl = 250;
+    int nEl = 50;
 
     // Time-related parameters
     string oname   = "integrin.";
     string oname_v = "velocity.";
     double maxTime  = 10000000;
     double maxNStep = 10000000;
-    double maxDelt  = 1E-1;
+    double maxDelt  = 1E-2;
     double stepFactor = 0.9;
-    int nSave = 1;
+    int nSave = 5;
     double width = 0.1; 
-    double L = 1.0;
+    double L = 0.3;
 
     SmartPtr<ParamStructure> userStr   = Create<ParamStructure>() ;
     userStr->dparam.resize(50);
@@ -621,7 +600,7 @@ int main(int argc, char *argv[])
     try
     {
         structMesh->setMesh(eType, bfType, 2);
-        structMesh->setPeriodicBoundaryCondition({Axis::Xaxis, Axis::Yaxis});
+        structMesh->setPeriodicBoundaryCondition({Axis::Xaxis,Axis::Yaxis});
         structMesh->genRectangle(nEl,nEl, L, L);
     }
     catch (runtime_error& err)
@@ -680,7 +659,7 @@ int main(int argc, char *argv[])
     try
     {
         dhand_v->setNameTag("dhand_v");
-        dhand_v->setDOFs({"vx","vy","ux","uy","us_x","us_y","c"});
+        dhand_v->setDOFs({"vx","vy","us_x","us_y","ux","uy"});
         dhand_v->setNodeAuxF({"phi"});
         dhand_v->Update();
         cout << dhand->myRank() << ":   DOFsHandler successfully created. " << endl;
@@ -731,7 +710,7 @@ int main(int argc, char *argv[])
 
         // Calculate the phase of the sine wave
         double phase = 2.0 * 3.14159 * direction / WAVELENGTH + PHASE_OFFSET;
-        double mean  = kon_phi * x_m / (kon_phi + koff_phi) ; 
+        double mean  = kon_phi*x_m/(kon_phi + koff_phi * slip_rate(0.0, 0.0));  // phi_ss at f=0
         // Calculate the value of r using the sine wave
         double r  = AMPLITUDE * std::sin(phase) ;
         double r1 = 0.001 * (((double) rand() / (RAND_MAX)) * 2.0 - 1.0);
@@ -740,16 +719,12 @@ int main(int argc, char *argv[])
 
         dhand->nodeDOFs->setValue(0, i, IndexType::Local,   r2);
         int crease = dhand_v->mesh->nodeCrease(i, IndexType::Local);
-        // if (x>L-1E-2)
-        // {
-        //     dhand_v->nodeDOFs->setValue("vx", i, IndexType::Local, 0);
-        //     dhand_v->setConstraint("vx", i, IndexType::Local, 0);
-        //     //dhand_v->setConstraint("us_x", i, IndexType::Local, 0); 
-        // }
-
-
+        if (x > L - 1E-2)
+        {
+            // dhand_v->nodeDOFs->setValue("vx", i, IndexType::Local, 0);
+            // dhand_v->setConstraint("vx", i, IndexType::Local, 0);
+        }
     }
-    dhand_v->nodeDOFs->setValue("c",kon/(koff*slip_rate(0,v_0))); 
     if (flag_micropattern)
     {
         for (int i = 0; i < dhand->mesh->loc_nPts(); ++i)
@@ -780,19 +755,16 @@ int main(int argc, char *argv[])
     {
         dhand_v->nodeDOFs->setValue("vx", v_0);
         dhand_v->nodeDOFs->setValue("vy", 0); 
-        dhand_v->setConstraint("uy",0); 
+        dhand_v->setConstraint("vx",0); 
+        dhand_v->setConstraint("vy",0); 
     }
 
     dhand_v->nodeDOFs->setValue("ux",0);
-    dhand_v->nodeDOFs->setValue("uy",0);  
-    dhand_v->nodeDOFs->setValue("us_x",0);   
-    dhand_v->nodeDOFs->setValue("us_y",0); 
-
-    // dhand_v->setConstraint("vy",0);      
-    // dhand_v->setConstraint("vx",0);  
-
-    dhand_v->setConstraint("us_x",0);   
-    dhand_v->setConstraint("us_y",0);   
+    dhand_v->nodeDOFs->setValue("uy",0);
+    dhand_v->nodeDOFs->setValue("us_x",0);
+    dhand_v->nodeDOFs->setValue("us_y",0);
+    dhand_v->setConstraint("us_x",0);
+    dhand_v->setConstraint("us_y",0);
     dhand->UpdateGhosts();
     dhand->nodeDOFs0->setValue(dhand->nodeDOFs);
     dhand_v->nodeDOFs0->setValue(dhand_v->nodeDOFs);
@@ -878,15 +850,15 @@ int main(int argc, char *argv[])
     // Create linear solver
     SmartPtr<MUMPSDirectLinearSolver> linSolver_v = Create<MUMPSDirectLinearSolver>();
     linSolver_v->setHiPerProblem(hiperProbl_v);
-    linSolver_v->setWorkSpaceMemoryIncrease(200);
     linSolver_v->setDefaultParameters();
+    linSolver_v->setWorkSpaceMemoryIncrease(200);
     linSolver_v->Update();
 
 
     // Create nonlinear solver
     SmartPtr<NewtonRaphsonNonlinearSolver> nonlinSolver = Create<NewtonRaphsonNonlinearSolver>();
     nonlinSolver->setLinearSolver(linSolver);
-    nonlinSolver->setMaxNumIterations(20);
+    nonlinSolver->setMaxNumIterations(6);
     nonlinSolver->setResTolerance(1.E-6);
     nonlinSolver->setSolTolerance(1.E-6);
     // nonlinSolver->setResMaximum(1.E5);
@@ -900,7 +872,7 @@ int main(int argc, char *argv[])
     // Create nonlinear solver
     SmartPtr<NewtonRaphsonNonlinearSolver> nonlinSolver_v = Create<NewtonRaphsonNonlinearSolver>();
     nonlinSolver_v->setLinearSolver(linSolver_v);
-    nonlinSolver_v->setMaxNumIterations(20);
+    nonlinSolver_v->setMaxNumIterations(6);
     nonlinSolver_v->setResTolerance(1.E-6);
     nonlinSolver_v->setSolTolerance(1.E-6);
     // nonlinSolver_v->setResMaximum(1.E8);
@@ -934,7 +906,7 @@ int main(int argc, char *argv[])
     int timeStep{0};
     double ener_prev{1.E8};
     std::ofstream outFile("output.txt");
-    outFile << "time" << "," << "vx" << "," << "c" <<  "," << "ux"<< std::endl; 
+    outFile << "time" << "," << "vx" << "," << "ux" << std::endl;
     while ((timeStep < maxNStep) and (time < maxTime))
     {
         // Write
@@ -948,17 +920,6 @@ int main(int argc, char *argv[])
         // Newton-Raphson method
         int    ierr  = nonlinSolver->solve();
 
-        double max = -10;
-        double min = 10;
-        for(int i = 0; i < disMesh->loc_nPts(); i++)
-        {
-            double val = dhand->nodeDOFs->getValue(0,i,IndexType::Local);
-            max = std::max(max,val);
-            min = std::min(min,val);
-        }
-        MPI_Allreduce(MPI_IN_PLACE,&max,1,MPI_DOUBLE,MPI_MAX,dhand->comm());
-        MPI_Allreduce(MPI_IN_PLACE,&min,1,MPI_DOUBLE,MPI_MIN,dhand->comm());
-        
         // cout << dhand->myRank() << " " << min << " " << max << endl;
         // Check convergence
         if (ierr != 0)// and max < 1.0 and min > 0.0)
@@ -978,27 +939,24 @@ int main(int argc, char *argv[])
             if (ierr_v != 0)
             {
 
-
-                for (int i = 0; i < dhand->mesh->loc_nPts(); i++)
+                // u is now solved by LS_v as DOFs — just copy to dhand auxF for use in phi equation
+                for (int i = 0; i < dhand->mesh->loc_nPts(); ++i)
                 {
-
-                    double vx  = dhand_v->nodeDOFs->getValue("vx", i, IndexType::Local);
-                    double vy  = dhand_v->nodeDOFs->getValue("vy", i, IndexType::Local);
-                    double ux  = dhand_v->nodeDOFs->getValue("ux", i, IndexType::Local);
-                    double uy  = dhand_v->nodeDOFs->getValue("uy", i, IndexType::Local);
-                    double us_x  = dhand_v->nodeDOFs->getValue("us_x", i, IndexType::Local);
-                    double us_y  = dhand_v->nodeDOFs->getValue("us_y", i, IndexType::Local);
-
-                    dhand->nodeAuxF->setValue("vx", i, IndexType::Local, vx);
-                    dhand->nodeAuxF->setValue("vy", i, IndexType::Local, vy);
-                    dhand->nodeAuxF->setValue("ux", i, IndexType::Local, ux);
-                    dhand->nodeAuxF->setValue("uy", i, IndexType::Local, uy);
+                    double vx   = dhand_v->nodeDOFs->getValue("vx",  i, IndexType::Local);
+                    double vy   = dhand_v->nodeDOFs->getValue("vy",  i, IndexType::Local);
+                    double ux   = dhand_v->nodeDOFs->getValue("ux",  i, IndexType::Local);
+                    double uy   = dhand_v->nodeDOFs->getValue("uy",  i, IndexType::Local);
+                    double us_x = dhand_v->nodeDOFs->getValue("us_x", i, IndexType::Local);
+                    double us_y = dhand_v->nodeDOFs->getValue("us_y", i, IndexType::Local);
+                    dhand->nodeAuxF->setValue("vx",   i, IndexType::Local, vx);
+                    dhand->nodeAuxF->setValue("vy",   i, IndexType::Local, vy);
+                    dhand->nodeAuxF->setValue("ux",   i, IndexType::Local, ux);
+                    dhand->nodeAuxF->setValue("uy",   i, IndexType::Local, uy);
                     dhand->nodeAuxF->setValue("us_x", i, IndexType::Local, us_x);
                     dhand->nodeAuxF->setValue("us_y", i, IndexType::Local, us_y);
-
-
                 }
                 dhand->UpdateGhosts();
+                dhand_v->UpdateGhosts();
                 // Save solution
                 dhand_v->nodeDOFs0->setValue(dhand_v->nodeDOFs);
                 // Update variables
@@ -1020,9 +978,7 @@ int main(int argc, char *argv[])
                     dhand_v->printFileVtk(solName_v, true,time);
                     double vx  = dhand_v->nodeDOFs->getValue("vx", 0, IndexType::Local);
                     double ux  = dhand_v->nodeDOFs->getValue("ux", 0, IndexType::Local);
-                    double c   = dhand_v->nodeDOFs->getValue("c",  0, IndexType::Local);
-
-                    outFile << time << "," << vx << "," << c <<  "," << ux<< std::endl; 
+                    outFile << time << "," << vx << "," << ux << std::endl;
                 }
 
                 for (int i = 0; i < dhand->mesh->loc_nPts(); i++)
@@ -1042,6 +998,12 @@ int main(int argc, char *argv[])
                 dhand_v->nodeDOFs->setValue(dhand_v->nodeDOFs0);
                 dhand->nodeDOFs->setValue(dhand->nodeDOFs0);
             }
+
+                int iters = std::max(nonlinSolver->numberOfIterations(), nonlinSolver_v->numberOfIterations());
+                if (iters > 4)
+                    deltat *= stepFactor;
+                else
+                    deltat /= stepFactor;
         }
         else
         {
