@@ -57,9 +57,9 @@ file LICENSE or https://opensource.org/license/gpl-3-0.
 #include <cmath>
 
 
-static double chi      = -6.5; //==Fix this
-static double kon_phi  = 100.0;
-static double koff_phi = 10;
+static double chi      = -6.0; //==Fix this
+static double kon_phi  = 50.0;
+static double koff_phi = 5;
 static double deltat   = 1E-5;
 static double dt_scale_v = 1e2;
 static double mobility = 0.068;
@@ -70,9 +70,10 @@ static double x_0 = 5;
 static double x_1 = 6;
 static double x_m = 5.5;
 static int flag_domain_type = 3;   // 1 for biperiodic, 2 for sector and 3 for circle
-static double xi_2          =    -2.0;
+static double xi_2          =   -1.8;  // peak anisotropy (at f = f_xi)
+static double f_xi          =   0.025; // force at which xi peaks (catch-slip midpoint)
 static double theta         = 30.*M_PI/180.;
-static double fric          = 0.01;
+static double fric          = 1;
 static double k_b           = 1;
 static double K_subs        = 0.5;
 static double alpha_1       = 3.0;
@@ -82,7 +83,9 @@ static double D_u           = 0.3; //=== diffusion of the u-field
 static double beta0         = 0.0;
 bool flag_micropattern      = 0.0;
 bool flag_u_quasistatic     = false;  // true: u = v/alpha(phi) instantly (no drift, no oscillations — diagnostic)
-
+// flag_flow_mode: 0 = biperiodic (x+y), v_0 constrained everywhere
+//                 1 = monoperiodic (y only), v_0 on left end, v=0 on right end
+static int flag_flow_mode = 1;
 
 double addGaussianNoise(double mean, double stddev)
 {
@@ -91,7 +94,6 @@ double addGaussianNoise(double mean, double stddev)
     std::normal_distribution<double> distribution(mean,stddev);
     return distribution(generator); 
 }
-
 
 // double slip_rate(double f, double v0)
 // {
@@ -118,11 +120,13 @@ double  slip_rate(double f,double v0)
 
 double  catch_rate(double f,double v0)
 {
-
-    double A = 1; //exp(-3*f);
-    if (A<0.5)
-        return 0.5;
-     return A;
+    // static const double A_max = 1000.0;  // peak catch stabilisation at f=0
+    // static const double f_c   = 1e-3;   // decay scale; A ~ 1 for f >> f_c
+    // return 1.0 + (A_max - 1.0) * std::exp(-f / f_c);
+   double A = 1000;
+   if (f>1E-3)
+    A = 1; 
+   return A;
 }
 
 void LS(hiperlife::FillStructure& fillStr)
@@ -199,8 +203,11 @@ void LS(hiperlife::FillStructure& fillStr)
     double f_mag = sqrt(fx_*fx_ + fy_*fy_);
     double A = slip_rate(f_mag,1);
     double A_catch = catch_rate(f_mag,1);
-    double chi_ = chi/A_catch;
-
+    // chi follows catch-slip bell: 0 at f=0, peaks at chi at f=f_xi, returns to 0 at high f
+    double chi_bell = (f_mag > 0.0) ? (f_mag/f_xi) * std::exp(1.0 - f_mag/f_xi) : 0.0;
+    double chi_ = chi;
+    if (A>3)
+        chi_ = 0 ; 
     v_mag = sqrt(v[0]*v[0] + v[1]*v[1]);
     double r    = sqrt(x[0]*x[0] +  x[1]*x[1]);
     // double kon_cutoff = 0.5*(1.0 - tanh((phin - x_m)));
@@ -211,7 +218,7 @@ void LS(hiperlife::FillStructure& fillStr)
     double phi_1 = x_1;
     double fa_maturity    = 0.5*(1.0 + tanh(steep_ls * (phin - 1.5*x_m)));
     double threshold_mobility = 1.0 - fa_maturity;
-    double xi_2_ = (xi_2 * f_mag /A_catch) * threshold_mobility;
+    double xi_2_   = xi_2 * f_mag * threshold_mobility;
     double blend = (1.0 - fa_maturity) * A + fa_maturity;
     double koff_ = koff_phi*A;
     double kon_  = kon_phi;
@@ -421,7 +428,7 @@ void LS_v(hiperlife::FillStructure& fillStr)
     int nDim  = subFill.nDim;
     int pDim  = subFill.pDim;
     int auxF  = subFill.numAuxF;
-    double gamma  = 20.0;
+    double gamma  = 400.0; // fix this::: 200
     double visc   = 1;
     double fric_ = fric;
     double tau  = 1;
@@ -489,7 +496,7 @@ void LS_v(hiperlife::FillStructure& fillStr)
 
 
     // //[9.2] GRADIENT
-    Bk(all,range(0,1))(K,k) +=  gamma*jac*d_divv(K,k);
+    Bk(all,range(0,1))(K,k)           +=  gamma*jac*d_divv(K,k);
     Bk(all,range(0,1))(K,k)           +=  jac * visc * (dv_rodt(K,k,m,n)*rodt(m,n))(K,k);
     // Bk(all,range(0,1))(K,k)           +=  jac * visc * divv*d_divv(K,k);
     // //   //[12.2] HESSIAN
@@ -506,8 +513,8 @@ void LS_v(hiperlife::FillStructure& fillStr)
     //###############################  BOND FORCE ON ACTIN  ################################//
     // ∂(k_b|u|²)/∂u = k_b·u  →  body force on actin from stretched integrin bonds
     //#####################################################################################//
-    Bk(all,range(0,1))(K,k)                            +=   phi*jac* bf(K) * k_b * u(k)/(deltat_*x_m);
-    Ak(all,range(0,1),all,range(4,5))(K,k,L,l)         +=   phi*jac* bf(K) * bf(L) * k_b * id2d(k,l)/(deltat_*x_m);
+    Bk(all,range(0,1))(K,k)                            +=   phi*jac* bf(K) * k_b * u(k)/(deltat_);
+    Ak(all,range(0,1),all,range(4,5))(K,k,L,l)         +=   phi*jac* bf(K) * bf(L) * k_b * id2d(k,l)/(deltat_);
     //#######################################################################################//
     //###############################  ADHESION DISPLACEMENT u  ############################//
     // du/dt = v - alpha_detach*u   (backward Euler, phi timestep)
@@ -607,7 +614,10 @@ int main(int argc, char *argv[])
     try
     {
         structMesh->setMesh(eType, bfType, 2);
-        structMesh->setPeriodicBoundaryCondition({Axis::Xaxis,Axis::Yaxis});
+        if (flag_flow_mode == 0)
+            structMesh->setPeriodicBoundaryCondition({Axis::Xaxis, Axis::Yaxis});
+        else if (flag_flow_mode == 1)
+            structMesh->setPeriodicBoundaryCondition({Axis::Yaxis});
         structMesh->genRectangle(nEl,nEl, L, L);
     }
     catch (runtime_error& err)
@@ -726,11 +736,7 @@ int main(int argc, char *argv[])
 
         dhand->nodeDOFs->setValue(0, i, IndexType::Local,   r2);
         int crease = dhand_v->mesh->nodeCrease(i, IndexType::Local);
-        if (x > L - 1E-2)
-        {
-            // dhand_v->nodeDOFs->setValue("vx", i, IndexType::Local, 0);
-            // dhand_v->setConstraint("vx", i, IndexType::Local, 0);
-        }
+        // right-end v=0 BC handled in flag_flow_mode == 2 constraint block below
     }
     if (flag_micropattern)
     {
@@ -761,9 +767,28 @@ int main(int argc, char *argv[])
     else
     {
         dhand_v->nodeDOFs->setValue("vx", v_0);
-        dhand_v->nodeDOFs->setValue("vy", 0); 
-        dhand_v->setConstraint("vx",0); 
-        dhand_v->setConstraint("vy",0); 
+        dhand_v->nodeDOFs->setValue("vy", 0);
+        if (flag_flow_mode == 0)
+        {
+            // biperiodic: uniform v_0 everywhere
+            dhand_v->setConstraint("vx", 0);
+            dhand_v->setConstraint("vy", 0);
+        }
+        else if (flag_flow_mode == 1)
+        {
+            // monoperiodic in y: v_0 on left end, v=0 on right end
+            for (int i = 0; i < dhand_v->mesh->loc_nPts(); ++i)
+            {
+                double x = disMesh->nodeCoord(i, 0, IndexType::Local);
+                if (x > L - 1E-2)
+                {
+                    dhand_v->nodeDOFs->setValue("vx", i, IndexType::Local, 0);
+                    dhand_v->nodeDOFs->setValue("vy", i, IndexType::Local, 0);
+                    dhand_v->setConstraint("vx", i, IndexType::Local, 0);
+                    dhand_v->setConstraint("vy", i, IndexType::Local, 0);
+                }
+            }
+        }
     }
 
     dhand_v->nodeDOFs->setValue("ux",0);
