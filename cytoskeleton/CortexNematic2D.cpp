@@ -146,13 +146,15 @@ int main ( int argc, char *argv[]  )
     double kosm = 0.001;
     config.readInto(kosm, "kosm");
 
+    double kgrad = 0.0;
+    config.readInto(kgrad, "kgrad");
+
     int totalTimeSteps{1000000};
     config.readInto(totalTimeSteps, "totalTimeSteps");
 
 
     double adaptiveStepTime = 0.975;
     config.readInto(adaptiveStepTime, "adaptiveStepTime");
-
 
     int nPrint = 20;
     config.readInto(nPrint, "nPrint");
@@ -178,15 +180,14 @@ int main ( int argc, char *argv[]  )
     double lambda_trans = 6.24;
     config.readInto(lambda_trans, "lambda_trans");
 
-
-    double kon_phi = 1;
+    double kon_phi = 50;
     config.readInto(kon_phi, "kon_phi");
 
-    double koff_phi = 0.1;
+    double koff_phi = 5;
     config.readInto(koff_phi, "koff_phi");   
 
     double offset  =  6.5;
-
+    
     double x_0 = offset; 
     config.readInto(x_0, "x_0");   
 
@@ -196,16 +197,17 @@ int main ( int argc, char *argv[]  )
     double x_m = 0.5*(x_0 +x_1); 
     config.readInto(x_m, "x_m");
 
-    double chi      = -6.0;
+    double chi      = -11.0;
     config.readInto(chi, "chi");   
 
-    double epsilon2 = 1E-3;
+    double epsilon2 = 1E-2;
     config.readInto(epsilon2, "epsilon2");   
 
-
     double mobility = 0.067;
-    config.readInto(mobility, "mobility");   
+    config.readInto(mobility, "mobility");
 
+    double D_u = 0.1;
+    config.readInto(D_u, "D_u");
 
     //Consistency check
     bool cCheck{true};
@@ -265,7 +267,7 @@ int main ( int argc, char *argv[]  )
         userStr->dparam[18] = uPoly;
         userStr->dparam[19] = t_stall;
         userStr->dparam[20] = kosm;
-        //userStr->dparam[21] = ;        
+        userStr->dparam[21] = kgrad;        
         userStr->dparam[22] = heqb;
         userStr->dparam[23] = L;
         userStr->dparam[24] = lambda_trans;
@@ -277,7 +279,8 @@ int main ( int argc, char *argv[]  )
         userStr->dparam[30]  = x_1;
         userStr->dparam[31]  = chi;
         userStr->dparam[32]  = epsilon2;
-        userStr->dparam[33]  = mobility;               
+        userStr->dparam[33]  = mobility;
+        userStr->dparam[34]  = D_u;
  
         //Numerical parameters
         userNum->dparam.resize(3);
@@ -287,68 +290,22 @@ int main ( int argc, char *argv[]  )
         userNum->iparam[0] = maxIter;
         userNum->iparam[1] = testCase;
     }
-    RCP<StructMeshGenerator> structMesh        = rcp (new StructMeshGenerator);
-    RCP<StructMeshGenerator> structMesh_phi    = rcp (new StructMeshGenerator);    
-    RCP<MeshLoader> loadedMesh     = rcp(new MeshLoader);
-    RCP<MeshLoader> loadedMesh_phi = rcp(new MeshLoader);
+    RCP<MeshLoader> loadedMesh = rcp(new MeshLoader);
     if (testCase==1)
     {
-        structMesh->setBasisFuncType(BasisFuncType::Lagrangian);
-        structMesh->setBasisFuncOrder(bfOrder);
-        structMesh->setElemType(ElemType::Square);
-        // Impose periodicity in the theeta direction
-        std::vector<Axis> axis;
-        axis.push_back(Axis::Yaxis);
-        //structMesh->setPeriodicBoundaryCondition(axis);
-        //Generate an annulus
-        //structMesh->genAnnularSector(nx, ny, r_out, r_in, theta); 
-       // structMesh->genDisk(nx, ny, r_out);
-        structMesh->genAnnulus(nx,2*ny,r_in,r_out);
-        //structMesh->genSquare(50,50,5);
-        //structMesh->stretchElemsAsymmetric(-2,1,1);
-        structMesh->transformFree([](double x, double y) {
-            x = 1.0 * x;
-            y = 1.0 * y;
-            return std::make_tuple(x, y);                  
-        });                                               
-
-        structMesh_phi->setBasisFuncType(BasisFuncType::Nurbs);
-        structMesh_phi->setBasisFuncOrder(2);
-        structMesh_phi->setElemType(ElemType::Square);
-        structMesh_phi->genAnnulus(nx,2*ny,r_in,r_out);
-                                            
-
-        //Mesh
-        loadedMesh_phi->setElemType(ElemType::Triang);
-        loadedMesh_phi->setBasisFuncType(BasisFuncType::SubdivSurfs);
-        loadedMesh_phi->setBasisFuncOrder(2);
-        loadedMesh_phi->loadMesh(fMesh,hiperlife::MeshType::Parallel);
-
         loadedMesh->setElemType(ElemType::Triang);
         loadedMesh->setBasisFuncType(BasisFuncType::SubdivSurfs);
         loadedMesh->setBasisFuncOrder(2);
-        loadedMesh->loadMesh(fMesh,hiperlife::MeshType::Parallel);
-
+        loadedMesh->loadMesh(fMesh, hiperlife::MeshType::Parallel);
     }
 
     //Dismesh
-    RCP<DistributedMesh> disMesh,disMesh_phi;
-
-        disMesh     = rcp(new DistributedMesh);
-        disMesh_phi = rcp(new DistributedMesh);
+    RCP<DistributedMesh> disMesh = rcp(new DistributedMesh);
         if (testCase==1)
-        { 
-            disMesh->setMesh(loadedMesh_phi);
-            disMesh_phi->setMesh(loadedMesh_phi);  
-        }      
-        else if (testCase==2)
             disMesh->setMesh(loadedMesh);
 
-        disMesh_phi->setBalanceMesh(balanceMesh);  
         disMesh->setBalanceMesh(balanceMesh);
-
         disMesh->Update();
-        disMesh_phi->Update();
         disMesh->printFileLegacyVtk("DensityDependCortexNemacMesh");
         if (disMesh->myRank() == 0)
             cout << "Dismesh successfully created. " << endl;
@@ -398,9 +355,7 @@ int main ( int argc, char *argv[]  )
 
        dofHand->nodeDOFs->setValue("ux",0.0);
        dofHand->nodeDOFs->setValue("uy",0.0);
-       dofHand->setConstraint("ux",0);
-       dofHand->setConstraint("uy",0);
-
+       // ux/uy solved by FEM — no constraint
        dofHand->nodeDOFs0->setValue(dofHand->nodeDOFs);
        dofHand->UpdateGhosts();
        dhand->nodeDOFs0->setValue(dhand->nodeDOFs);
@@ -444,6 +399,7 @@ int main ( int argc, char *argv[]  )
 
     if (hiperProbl->myRank() == 0)
         cout << "HiperProblem successfully updated." << endl;
+
 
     // ElemType eType = ElemType::Square;
     // gPts= pow(2+1, computePDim(eType));
@@ -526,7 +482,7 @@ int main ( int argc, char *argv[]  )
     // Create nonlinear solver
     SmartPtr<NewtonRaphsonNonlinearSolver> nonlinSolver_phi = Create<NewtonRaphsonNonlinearSolver>();
     nonlinSolver_phi->setLinearSolver(linSolver_phi);
-    nonlinSolver_phi->setMaxNumIterations(20);
+    nonlinSolver_phi->setMaxNumIterations(6);
     nonlinSolver_phi->setResTolerance(1.E-6);
     nonlinSolver_phi->setSolTolerance(1.E-6);
     nonlinSolver_phi->setLineSearch(false);
@@ -557,6 +513,20 @@ int main ( int argc, char *argv[]  )
         if (converged)
         {
 
+            // Sync new v/u to dhand->nodeAuxF before phi solve
+            for (int i = 0; i < dhand->mesh->loc_nPts(); ++i)
+            {
+                double ux = dofHand->nodeDOFs->getValue("ux", i, IndexType::Local);
+                double uy = dofHand->nodeDOFs->getValue("uy", i, IndexType::Local);
+                double vx = dofHand->nodeDOFs->getValue("vx", i, IndexType::Local);
+                double vy = dofHand->nodeDOFs->getValue("vy", i, IndexType::Local);
+                dhand->nodeAuxF->setValue("ux", i, IndexType::Local, ux);
+                dhand->nodeAuxF->setValue("uy", i, IndexType::Local, uy);
+                dhand->nodeAuxF->setValue("vx", i, IndexType::Local, vx);
+                dhand->nodeAuxF->setValue("vy", i, IndexType::Local, vy);
+            }
+            dhand->UpdateGhosts();
+
             bool converged_phi = nonlinSolver_phi->solve();
             if (converged_phi)
             {
@@ -567,11 +537,11 @@ int main ( int argc, char *argv[]  )
 
                 for (int i = 0; i < dhand->mesh->loc_nPts(); ++i)
                 {
-                    double phi = dhand->nodeDOFs->getValue("phi", i,IndexType::Local);
-                    dofHand->nodeAuxF->setValue("phi", i, IndexType::Local,phi);
+                    double phi = dhand->nodeDOFs->getValue("phi", i, IndexType::Local);
+                    dofHand->nodeAuxF->setValue("phi", i, IndexType::Local, phi);
                 }
                 dofHand->UpdateGhosts();
-
+                dhand->UpdateGhosts();
 
                 deltat /= adaptiveStepTime;
                 //Update time variables
@@ -599,14 +569,22 @@ int main ( int argc, char *argv[]  )
             }
             else
             {
-                //Reduce time-step size
+                // phi failed — reset both fields to last converged state
+                dofHand->nodeDOFs->setValue(dofHand->nodeDOFs0);
+                dhand->nodeDOFs->setValue(dhand->nodeDOFs0);
+                dofHand->UpdateGhosts();
+                dhand->UpdateGhosts();
                 deltat *= adaptiveStepTime;
             }
 
         }
         else
         {
-            //Reduce time-step size
+            // v/u failed — reset both fields to last converged state
+            dofHand->nodeDOFs->setValue(dofHand->nodeDOFs0);
+            dhand->nodeDOFs->setValue(dhand->nodeDOFs0);
+            dofHand->UpdateGhosts();
+            dhand->UpdateGhosts();
             deltat *= adaptiveStepTime;
         }
 

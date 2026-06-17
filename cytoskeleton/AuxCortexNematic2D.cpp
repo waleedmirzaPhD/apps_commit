@@ -21,9 +21,16 @@
 #include <random>
 #include "hl_SurfLagrParam.h"
 
-double  catch_slip_rate(double f)
+double slip_rate(double f)
 {
-    return exp(-3*f);
+    double f_offset_2 = 0.2;
+    double A = std::exp(-50*f) + std::exp(50.0*(f - f_offset_2));
+    return std::min(A, 1E5);
+}
+
+double catch_rate(double f)
+{
+    return std::exp(-2.5*f);
 }
 
 void LS_phi(hiperlife::FillStructure& fillStr)
@@ -45,7 +52,7 @@ void LS_phi(hiperlife::FillStructure& fillStr)
     double *xe_nodes  = subFill.nborCoords.data();
     double *ue_nodes  = subFill.nborDOFs.data();
 
-    double deltat_    = 1E-2*fillStr.paramStr->dparam[0];
+    double deltat_    = 1E-1*fillStr.paramStr->dparam[0];
     double kon_phi  =   fillStr.paramStr->dparam[26];
     double koff_phi =   fillStr.paramStr->dparam[27];
     double x_m      =   fillStr.paramStr->dparam[28];
@@ -103,26 +110,30 @@ void LS_phi(hiperlife::FillStructure& fillStr)
 
     double v_mag = sqrt(v[0]*v[0] + v[1]*v[1]);
     double u_mag = sqrt(u[0]*u[0] + u[1]*u[1]);
-    double f_mag = abs(u_mag);
-    double A = catch_slip_rate(f_mag);
-    double A_catch = catch_slip_rate(f_mag);
-    double chi_ = chi/A_catch;
-    double r    = sqrt(x[0]*x[0] +  x[1]*x[1]);
-    if (r<4.0)
-    {
-        chi_ = 0.0 ; 
-    }
+    double f_mag = u_mag;
+
+    // Catch-slip kinetics
+    double A       = slip_rate(f_mag);   // slip rate: large at high force → koff large
+    double A_catch = catch_rate(f_mag);  // catch: exp(-20f), large at low force
+    if (A_catch<0.25)
+        A_catch = 0.25;
+    double chi_    = chi / A_catch;      // chi weakens at high force (A_catch small)
+
     double kon_ = kon_phi;
-    double koff_= koff_phi*A; 
+    double koff_= koff_phi * A;
     double mobility_ = mobility;
     double epsilon2_  = epsilon2;
-    double advec_param = 1E-5 ; //3E-5;
-    double phi_0 = x_0; 
+    double phi_0 = x_0;
     double phi_1 = x_1;
-    double phi_threshold = 9;
-    double threshold_mobility =  1.0 - 0.5*(1+tanh(20*(phin-phi_threshold)));
 
-    double alpha_log =0;
+    // FA maturity threshold (matching focal_adhesion_1D_phi)
+    // Mature FA (phin >> 1.5*x_m): mobility and epsilon2 frozen, xi_2 disabled
+    double fa_maturity        = 0.5*(1.0 + tanh(100.0*(phin - 1.25*x_m)));
+    double threshold_mobility = 1.0 - fa_maturity;
+    mobility_  *= threshold_mobility;
+    epsilon2_  *= (threshold_mobility + 5E-2*fa_maturity);  // small residual for mature FAs
+
+    double alpha_log =0*1E-2;
     double phi_eps = std::max(phi, 1e-12);
 
     // log lower-bound penalty
@@ -142,40 +153,54 @@ void LS_phi(hiperlife::FillStructure& fillStr)
     double ddW = ddW_sub  + chi_  ;
     double dddW = dddW_sub  ;
 
-
-
+    // xi_2 anisotropy along bond-force direction (disabled by default, set non-zero to activate)
+    static const double xi_2 = 0.0;
+    double xi_2_ = xi_2 * f_mag * threshold_mobility;
 
     // Fill
     for (int i = 0; i < eNN; i++)
     {
-        // Gradient of basis function times gradient of phase-field variableñ
+        // Gradient of basis function times gradient of phase-field variable
         double gNagphi{};
         for (int d = 0; d < pDim; d++)
             gNagphi += gNa[pDim*i+d]*gphi[d];
 
         for (int j = 0; j < eNN; j++)
         {
-            // Product of the gradient of basis functions
             double gNagNb{};
-            double  gNb{};
             for (int d = 0; d < pDim; d++)
-            {
                 gNagNb += gNa[pDim*i+d]*gNa[pDim*j+d];
-            }
-            // Fill Ak
-            fillStr.Ak(0, 0)[i*DOF*eNN+j*DOF] += jac * Na[i] * (Na[j] * (1./deltat_)   );
-            fillStr.Ak(0, 0)[i*DOF*eNN+j*DOF] += jac * mobility_ * (ddW + phi * dddW) * Na[j] * gNagphi;
-            fillStr.Ak(0, 0)[i*DOF*eNN+j*DOF] += jac * mobility_ * phi * ddW * gNagNb;
-            fillStr.Ak(0, 0)[i*DOF*eNN+j*DOF] += jac * epsilon2_ * ((phi * lapNa[i] + gNagphi) * lapNa[j] + (lapNa[i] * Na[j] + gNagNb) * lapphi);
-
+            fillStr.Ak(0,0)[i*DOF*eNN+j*DOF] += jac * Na[i] * Na[j] * (1./deltat_);
+            fillStr.Ak(0,0)[i*DOF*eNN+j*DOF] += jac * Na[i] * Na[j] * (kon_ + koff_);
+            fillStr.Ak(0,0)[i*DOF*eNN+j*DOF] += jac * mobility_ * (ddW + phi*dddW) * Na[j] * gNagphi;
+            fillStr.Ak(0,0)[i*DOF*eNN+j*DOF] += jac * mobility_ * phi * ddW * gNagNb;
+            fillStr.Ak(0,0)[i*DOF*eNN+j*DOF] += jac * epsilon2_ * ((phi*lapNa[i]+gNagphi)*lapNa[j] + (lapNa[i]*Na[j]+gNagNb)*lapphi);
         }
-        // Fill RHS
-        fillStr.Bk(0)[i*DOF] += jac * ( Na[i] * ((phi-phin) / deltat_   - kon_*(x_m-phin) + koff_ * phin ) + mobility_ * (phi * ddW * gNagphi) + epsilon2_ * (phi * lapNa[i] + gNagphi) * lapphi     );
-
+        fillStr.Bk(0)[i*DOF] += jac * (Na[i] * ((phi-phin)/deltat_ - kon_*(x_m-phi) + koff_*phi)
+                               + mobility_ * phi * ddW * gNagphi
+                               + epsilon2_ * (phi*lapNa[i]+gNagphi) * lapphi);
     }
 
+    // Anisotropic mobility term P = u⊗u/|u|²
+    if (xi_2_ != 0.0 && f_mag > 1e-12)
+    {
+        wrapper<double,2> Bk(fillStr.Bk(0).data(), eNN, DOF);
+        wrapper<double,4> Ak(fillStr.Ak(0,0).data(), eNN, DOF, eNN, DOF);
+        wrapper<double,2> nborCoords(subFill.nborCoords.data(), eNN, nDim);
+        wrapper<double,1> bf_(subFill.getDer(0), eNN);
+        wrapper<double,2> Dbf_l(subFill.getDer(1), eNN, pDim);
+        tensor<double,2> T     = nborCoords(all,range(0,1)).T() * Dbf_l;
+        tensor<double,2> Dbf_g = Dbf_l * T.inv();
+        tensor<double,1> f_vec = {u[0], u[1]};
+        tensor<double,2> P     = outer(f_vec, f_vec) / (f_mag * f_mag);
+        tensor<double,1> gphi_(2);
+        gphi_(0) = gphi[0]; gphi_(1) = gphi[1];
+        Bk(all,0)(K) += jac * xi_2_ * P(i,k) * (phi * ddW * Dbf_g(K,i) * gphi_(k));
+        Ak(all,0,all,0)(K,L) += jac * xi_2_ * P(i,k) * (phi*ddW*Dbf_g(K,i)*Dbf_g(L,k)
+                                 + phi*dddW*bf_(L)*Dbf_g(K,i)*gphi_(k)
+                                 + bf_(L)*ddW*Dbf_g(K,i)*gphi_(k));
+    }
 
- 
 }
 
 
@@ -317,7 +342,8 @@ void LS_CortexNematic_2D(hiperlife::FillStructure& fillStr)
     tensor<double,3> DDbf_g(eNN,pDim,pDim);
     //tensor<double,1> Lapbf_g(eNN);
 
-    double deltat = fillStr.paramStr->dparam[0];
+    double deltat   = fillStr.paramStr->dparam[0];
+    double deltat_v = 10.0 * deltat;  // scaled timestep for v-equation (Rayleighian stiffness)
     double sus20  = fillStr.paramStr->dparam[1];
     double sus40  = fillStr.paramStr->dparam[2];
     double hcrit  = fillStr.paramStr->dparam[3];
@@ -341,21 +367,27 @@ void LS_CortexNematic_2D(hiperlife::FillStructure& fillStr)
     double kgrad   = fillStr.paramStr->dparam[21];
     double heqb    = fillStr.paramStr->dparam[22];
     double D       = fillStr.paramStr->dparam[23];
+    double D_u     = fillStr.paramStr->dparam[34];
     double lambda_trans =  fillStr.paramStr->dparam[24];
+    double kon_phi  =   fillStr.paramStr->dparam[26];
     double x_m      =   fillStr.paramStr->dparam[28];
+    double x_0      =   fillStr.paramStr->dparam[29];
+    double x_1      =   fillStr.paramStr->dparam[30];
+    double chi      =   fillStr.paramStr->dparam[31];
+    double epsilon2 =   fillStr.paramStr->dparam[32];
+    double mobility =   fillStr.paramStr->dparam[33];
 
     double kd;
     tensor<double,1> dkp(pDim);
     tensor<double,1> dkd(pDim);
-    //kp=0.0;kd=0.0;
     dkp = 0.0;dkd = 0.0;
 
-    // Re-scaling the coefficients with time step
-    sus20  = sus20/deltat;
-    sus40  = sus40/deltat;
-    frank = frank/deltat;
-    kosm  = kosm/deltat;
-    kgrad = kgrad/deltat;
+    // Re-scaling the coefficients with v-equation timestep
+    sus20  = sus20/deltat_v;
+    sus40  = sus40/deltat_v;
+    frank = frank/deltat_v;
+    kosm  = kosm/deltat_v;
+    kgrad = kgrad/deltat_v;
 
     //-----------------------------------------------------------
     //[2] OUTPUT
@@ -394,8 +426,8 @@ void LS_CortexNematic_2D(hiperlife::FillStructure& fillStr)
     tensor<double,2> nbor_q   = nborDOFs(all,range(1,2));
     tensor<double,2> nbor_q0  = nborDOFs0(all,range(1,2));
     tensor<double,2> nbor_v   = nborDOFs(all,range(3,4));
-    tensor<double,2> nbor_u_sub    = nborDOFs(all,range(5,6));
-    tensor<double,2> nbor_u0_sub   = nborDOFs0(all,range(5,6));
+    tensor<double,2> nbor_u    = nborDOFs(all,range(5,6));
+    tensor<double,2> nbor_u0   = nborDOFs0(all,range(5,6));
 
     tensor<double,2> id2d = {{1.0,0.0},{0.0,1.0}};
     tensor<double,3> voigt = {{{1,0},{0,1}},
@@ -415,13 +447,12 @@ void LS_CortexNematic_2D(hiperlife::FillStructure& fillStr)
     tensor<double,2> q0 = product(bf_voigt,nbor_q0,{{0,0},{1,1}});
     tensor<double,3> Dq = product(nbor_q,Dbf_voigt, {{0,0},{1,1}});
     tensor<double,3> Dq_0 = product(nbor_q0,Dbf_voigt, {{0,0},{1,1}});
-
-
+    
     //[4.3] VELOCITY
     tensor<double,1> v  = bf * nbor_v;
-    tensor<double,1> u_sub   =  bf * nbor_u_sub;
-    tensor<double,1> u0_sub  =  bf * nbor_u0_sub;
-    tensor<double,1> v_sub      =  (u_sub -   u0_sub)/deltat;
+    tensor<double,1> u   =  bf * nbor_u;
+    tensor<double,1> u0  =  bf * nbor_u0;
+    tensor<double,1> v_sub      =  (u -   u0)/deltat;
 
     //Velocity gradient
     tensor<double,2> Dv = product(nbor_v,Dbf_g,{{0,0}});
@@ -440,15 +471,15 @@ void LS_CortexNematic_2D(hiperlife::FillStructure& fillStr)
     tensor<double,2> omega = 0.5*(Dv - Dv.transpose({1,0}));
     tensor<double,4> dvomega = 0.5 * ( outer(Dbf_g,id2d).transpose({0,3,2,1}) - outer(Dbf_g,id2d).transpose({0,3,1,2}) );
 
-    //[4.4] JAUMANN DERIVATIVE
-    tensor<double,2> Jq = (q-q0)(m,n)/deltat  + Dq_0(m,n,o) * v(o) -  omega(m,o)*q0(o,n) +  q0(m,o)*omega(o,n);
+    //[4.4] JAUMANN DERIVATIVE  (uses deltat_v — q and v equations)
+    tensor<double,2> Jq = (q-q0)(m,n)/deltat_v  + Dq_0(m,n,o) * v(o) -  omega(m,o)*q0(o,n) +  q0(m,o)*omega(o,n);
 
-    tensor<double,2> Jq_ = (q-q0)(m,n)/deltat + Dq(m,n,o) * v(o) -  omega(m,o)*q(o,n) +  q(m,o)*omega(o,n);
-    tensor<double,4> dqJq_ = (bf_voigt(K,k,m,n)/deltat  +  Dbf_voigt(K,k,m,n,o) * v(o) -  omega(m,o)*bf_voigt(K,k,o,n) +  bf_voigt(K,k,m,o)*omega(o,n))(K,k,m,n);
+    tensor<double,2> Jq_ = (q-q0)(m,n)/deltat_v + Dq(m,n,o) * v(o) -  omega(m,o)*q(o,n) +  q(m,o)*omega(o,n);
+    tensor<double,4> dqJq_ = (bf_voigt(K,k,m,n)/deltat_v  +  Dbf_voigt(K,k,m,n,o) * v(o) -  omega(m,o)*bf_voigt(K,k,o,n) +  bf_voigt(K,k,m,o)*omega(o,n))(K,k,m,n);
     tensor<double,4> dvJq_ =  (Dq(m,n,k) * bf(K) -  dvomega(K,k,m,o)*q(o,n) +  q(m,o)*dvomega(K,k,o,n))(K,k,m,n);
 
 
-    tensor<double,4> dqJq = bf_voigt/deltat ;
+    tensor<double,4> dqJq = bf_voigt/deltat_v ;
     tensor<double,4> dvJq =  (Dq_0(m,n,k) * bf(K) -  dvomega(K,k,m,o)*q0(o,n) +  q0(m,o)*dvomega(K,k,o,n))(K,k,m,n);
 
     tensor<double,6> dqdvJq_ = ( Dbf_voigt(L,l,m,n,k) * bf(K) -  dvomega(K,k,m,o)*bf_voigt(L,l,o,n) +  bf_voigt(L,l,m,o)*dvomega(K,k,o,n))(K,k,L,l,m,n); 
@@ -462,7 +493,7 @@ void LS_CortexNematic_2D(hiperlife::FillStructure& fillStr)
     {
         //rvisc += 1E4*(sqrt(S2_0)-0.5);
     }
-    //kd = kd0*(1-sqrt(S2_0));
+    //kd = kd0*(1-sqrt(S2_0));  
 
 
     //   if (abs(lambda_rot)>1e-3 and sqrt(S2_0)>0.5)
@@ -488,14 +519,14 @@ void LS_CortexNematic_2D(hiperlife::FillStructure& fillStr)
     tensor<double,3> dv_v  = bf(K) * id2d(m,n) ;
     tensor<double,3> dvsub_v_sub  = bf(K) * id2d(m,n);
 
-    double h_ = h0 + deltat * (- (v * Dh) - h * divv + kp -kd*h);
+    double h_ = h0 + deltat_v * (- (v * Dh) - h * divv + kp -kd*h);
 
-    tensor<double,1> Dh_ = Dh0 + deltat * (-Dh*Dv -v*DDh - Dh*divv - h*Ddivv + dkp - kd*Dh - h*dkd);
+    tensor<double,1> Dh_ = Dh0 + deltat_v * (-Dh*Dv -v*DDh - Dh*divv - h*Ddivv + dkp - kd*Dh - h*dkd);
 
-    tensor<double,2> dhDh_      = deltat * (-Dbf_g*Dv - product(v,DDbf_g,{{0,1}}) - divv*Dbf_g - outer(bf,Ddivv) - kd*Dbf_g - outer(bf,dkd));
-    tensor<double,4> dhdvDh_    = deltat * (-product(Dbf_g,dvDv,{{1,2}}) - outer(bf,DDbf_g).transpose({1,0,2,3}) - outer(Dbf_g,Dbf_g).transpose({0,2,3,1}) - outer(bf,DDbf_g) );
+    tensor<double,2> dhDh_      = deltat_v * (-Dbf_g*Dv - product(v,DDbf_g,{{0,1}}) - divv*Dbf_g - outer(bf,Ddivv) - kd*Dbf_g - outer(bf,dkd));
+    tensor<double,4> dhdvDh_    = deltat_v * (-product(Dbf_g,dvDv,{{1,2}}) - outer(bf,DDbf_g).transpose({1,0,2,3}) - outer(Dbf_g,Dbf_g).transpose({0,2,3,1}) - outer(bf,DDbf_g) );
 
-    tensor<double,3> dvDh_      = deltat * (-product(Dh,dvDv,{{0,2}}) - outer(bf,DDh) - outer(Dbf_g,Dh) - h*DDbf_g);
+    tensor<double,3> dvDh_      = deltat_v * (-product(Dh,dvDv,{{0,2}}) - outer(bf,DDh) - outer(Dbf_g,Dh) - h*DDbf_g);
     tensor<double,4> dvdhDh_    = dhdvDh_.transpose({1,2,0,3});
 
     //[5] FREE ENERGY (SUSCEPTIBILITY)
@@ -508,11 +539,11 @@ void LS_CortexNematic_2D(hiperlife::FillStructure& fillStr)
     computeSus4(sus4 , dsus4, ddsus4, h0, sus40, hcrit);
     //computeSus4(sus4, dsus4, ddsus4, h_, sus40, hcrit);
 
-    tensor<double,2> dvh_ = -deltat * ( outer(bf,Dh) + h * Dbf_g );
+    tensor<double,2> dvh_ = -deltat_v * ( outer(bf,Dh) + h * Dbf_g );
 
 
-    tensor<double,1> dhh_ = -deltat * ( Dbf_g * v + bf * (divv + kd));
-    tensor<double,3> dvdhh_ = -deltat * ( outer(bf,Dbf_g.T()) + outer(Dbf_g,bf) );
+    tensor<double,1> dhh_ = -deltat_v * ( Dbf_g * v + bf * (divv + kd));
+    tensor<double,3> dvdhh_ = -deltat_v * ( outer(bf,Dbf_g.T()) + outer(Dbf_g,bf) );
     tensor<double,3> dhdvh_ = dvdhh_.transpose({2,0,1});
 
     tensor<double,2> qbfvoigt = product(q,bf_voigt,{{0,2},{1,3}});
@@ -554,8 +585,6 @@ void LS_CortexNematic_2D(hiperlife::FillStructure& fillStr)
 
     Ak(all,range(1,2),all,0) += (jac * frank) * outer(DqDbfvoigt,dhh_);
     Ak(all,range(3,4),all,0) += (0.5 * jac * frank * DqDq) * dvdhh_;
-
-
 
     double rad = sqrt(x(0)*x(0) +  x(1)*x(1));
     //lambda_rot = lambda_rot*0.5*(1+tanh(10*(rad-1.1)));
@@ -601,9 +630,6 @@ void LS_CortexNematic_2D(hiperlife::FillStructure& fillStr)
     //-----------------------------------------------------------
     // [9] POWER POTENTIAL [ROTATIONAL TERM]
     //[9.1]  RAYLEIGHIAN
-
-
-
     rayleighian += (jac * h0 * lambda_rot)* product(q0,Jq,{{0,0},{1,1}});
     // For plotting global power
     power +=  (jac * h0 * lambda_rot*h0)* product(q0,Jq,{{0,0},{1,1}});
@@ -685,7 +711,7 @@ void LS_CortexNematic_2D(hiperlife::FillStructure& fillStr)
 
 
     // [14.2] GRADIENT
-    const double ramp = 3*std::max((phi - x_m), 0.0);
+    const double ramp = 0*std::max((phi - x_m), 0.0);
     const double coeff = jac * (h0 * fric + ramp);
 
     Bk(all, range(3,4)) += coeff * outer(bf, v);
@@ -693,44 +719,9 @@ void LS_CortexNematic_2D(hiperlife::FillStructure& fillStr)
     // [14.3] HESSIAN
     Ak(all, range(3,4), all, range(3,4)) +=coeff * outer(outer(bf, id2d), bf).transpose({0,1,3,2});
         
+    Bk(all,range(3,4)) +=  (jac * h0 *1E3)*visc * product(S0nn0,dvrodt,{{0,2}, {1,3}} ) *product(S0nn0,rodt,{{0,0},{1,1}});
+    Ak(all,range(3,4),all,range(3,4)) +=  (jac * h0 *1E3)*visc*outer(product(S0nn0,dvrodt,{{0,2}, {1,3}} ) ,product(S0nn0,dvrodt,{{0,2},{1,3}}));
 
-    //[14.2]  GRADIENT
-    Bk(all,range(5,6)) += (jac * h0*0.1 ) * outer(bf,v_sub)/deltat;
-
-    //[14.3] HESSIAN
-    Ak(all,range(5,6),all,range(5,6)) += (jac * h0*0.1) * outer(outer(bf,id2d),bf).transpose({0,1,3,2})/(deltat*deltat);
-
-    double fric_aniso{}; 
-    //if (sqrt(S2_0)-0.6>0)
-    {
-        fric_aniso =  1E1; //*(sqrt(S2_0)-0.6);
-    }
-    {
-        //[14] FRICTION
-        rayleighian +=  (jac * fric_aniso)*(v-v_sub) * (v-v_sub);
-        // For plotting global dissipations
-        dissipation +=  (jac * fric_aniso)*(v-v_sub) * (v-v_sub);
-
-        //[14.2]  GRADIENT
-        //Bk(all,range(3,4)) += (jac * fric_aniso) * outer(bf,v-v_sub);
-        Bk(all,range(5,6)) -= (jac * fric_aniso) * outer(bf,v-v_sub)/deltat;
-        //[14.3] HESSIAN
-        //Ak(all,range(3,4),all,range(3,4)) += (jac * fric_aniso) * outer(outer(bf,id2d),bf).transpose({0,1,3,2});
-        //Ak(all,range(3,4),all,range(5,6)) -= (jac * fric_aniso) * outer(outer(bf,id2d),bf).transpose({0,1,3,2})/deltat;
-
-        Ak(all,range(5,6),all,range(3,4)) -= (jac * fric_aniso) * outer(outer(bf,id2d),bf).transpose({0,1,3,2})/deltat;
-        Ak(all,range(5,6),all,range(5,6)) += (jac * fric_aniso) * outer(outer(bf,id2d),bf).transpose({0,1,3,2})/(deltat*deltat);
-
-
-    }
-
-    //    if (sqrt(S2_0)>0.2)
-    {
-
-        Bk(all,range(3,4)) +=  (jac * h0 *1E3)*visc * product(S0nn0,dvrodt,{{0,2}, {1,3}} ) *product(S0nn0,rodt,{{0,0},{1,1}});
-        Ak(all,range(3,4),all,range(3,4)) +=  (jac * h0 *1E3)*visc*outer(product(S0nn0,dvrodt,{{0,2}, {1,3}} ) ,product(S0nn0,dvrodt,{{0,2},{1,3}}));
-
-    }
 
     //-----------------------------------------------------------
     //[15] CONSERVATION OF MASS
@@ -739,140 +730,73 @@ void LS_CortexNematic_2D(hiperlife::FillStructure& fillStr)
     //    double modv;
     tensor<double,1> bf_supg = bf + stab * ledge* Dbf_g * v;
     //[15.2]  RHS
-    Bk(all,0) += jac * (bf_supg * ( h - h_ ) + D*deltat*Dbf_g* Dh);
+    Bk(all,0) += jac * (bf_supg * ( h - h_ ) + D*deltat_v*Dbf_g* Dh);
 
     //[15.3] GRADIENT (OF RHS)
-    Ak(all,0,all,0)          += jac * (outer(bf_supg, ( bf - dhh_ )) + D*deltat*product(Dbf_g,Dbf_g,{{1,1}}));
+    Ak(all,0,all,0)          += jac * (outer(bf_supg, ( bf - dhh_ )) + D*deltat_v*product(Dbf_g,Dbf_g,{{1,1}}));
     Ak(all,0,all,range(3,4)) += jac * outer(bf_supg, -dvh_ );
     Ak(all,0,all,range(3,4)) += (jac * (h - h_) * stab * ledge ) * outer(Dbf_g,bf).transpose({0,2,1});
 
-    // Store global integrals
-    //fillStr.addContribGlobInteg("dissipation", dissipation);
+    double C = 1000*kon_phi;
 
+    double alpha_ = 1e-9 + C  * (1.0 - std::tanh(50.0 * (phi - 0.8*x_m)));
+  
+    // double alpha_ = (0.01 + 1000*(1.0 - tanh(10000 * (phi - 5.0))));
+    tensor<double,1> dot_u      =  v(k)- alpha_*u(k)   ;
+    tensor<double,3> du_dot_u   = -alpha_*bf(K)*id2d(k,l);
+    tensor<double,3> dv_dot_u   =  bf(K)*id2d(k,l);
+    tensor<double,3> dus_dot_u  =  -bf(K)*id2d(k,l)/deltat;
 
-    tensor<double,2> T_upd = (nborCoords(all,range(0,1)) + nborDOFs0(all,range(5,6))).T() * Dbf_l;
-    //Jacobian of the transformation (for integration)
-    double jac_upd = T_upd.det();
+    tensor<double,1> Ru_u = (u - u0) * (1.0/deltat) - dot_u;
+    Bk(all ,range(5,6))(K,k)                           +=     jac*bf(K)* Ru_u(k);
+    Ak(all ,range(5,6),all ,range(3,4))(K,k,L,l)       +=    -jac*bf(K)*dv_dot_u(L,k,l);
+    Ak(all ,range(5,6),all ,range(5,6))(K,k,L,l)       +=     jac*bf(K)* (bf(L)*id2d(k,l)/deltat - du_dot_u(L,k,l));
+    //Ak(all ,range(2,3),all ,range(4,5))(K,k,L,l)       +=     -jac*bf(K)* dus_dot_u(L,k,l)*deltat;
 
+    Bk(all ,range(3,4))(K,k)                           +=    jac*bf(K)*std::max(phi,1E-6)*u(k)/x_0 ;
+    Ak(all ,range(3,4),all ,range(5,6))(K,k,L,l)       +=    jac*bf(K)*std::max(phi,1E-6)*bf(L)*id2d(k,l)/x_0     ;
 
-    tensor<double,2> Du_sub = product(nbor_u_sub,Dbf_g,{{0,0}});
-    tensor<double,4> dvDu_sub =(Dbf_g(K,n)*id2d(m,k))(K,k,m,n) ; 
-    //Rate-of-deformation tensor
-    tensor<double,2> strain_subs = 0.5*(Du_sub + Du_sub.transpose({1,0}));
-    tensor<double,4> dvstrain_subs = 0.5 * ( outer(Dbf_g,id2d).transpose({0,3,1,2}) + outer(Dbf_g,id2d).transpose({0,3,2,1}) );
+    // Diffusion of u: D_u * ∫ ∇N_K · ∇u dΩ
+    tensor<double,2> Du = (nbor_u(K,k)*Dbf_g(K,n))(k,n);
+    Bk(all,range(5,6))(K,k) += jac * D_u * (Dbf_g(K,n) * Du(k,n));
+    Ak(all,range(5,6),all,range(5,6))(K,k,L,l) += jac * D_u * Dbf_g(K,n) * Dbf_g(L,n) * id2d(k,l);
 
+    // M(φ)·∇μ·∇u advection  — full ∇μ = W''∇φ − ε²∇(∇²φ)
+    double steep_v_loc      = 50.0;
+    double fa_mat_v         = 0.5*(1.0 + std::tanh(steep_v_loc * (phi - 1.5*x_m)));
+    double mob_v            = mobility * (1.0 - fa_mat_v);
+    double tanh_v           = std::tanh(steep_v_loc * (phi - 1.5*x_m));
+    double dM_dphi_v        = -mobility * (steep_v_loc/2.0) * (1.0 - tanh_v*tanh_v);
+    double ddW_v            = (12.0*std::pow(phi-x_0,2) + 12.0*std::pow(x_1-phi,2)) / 12.0 + chi;
+    tensor<double,1> gphi_v = Dbf_g(K,n) * nbor_phi(K);
 
+    // W'' part: +∫ N·M·W''·∇φ·∇u dΩ
+    Bk(all,range(5,6))(K,k)            += jac * bf(K) * mob_v * ddW_v * (gphi_v(n) * Du(k,n));
+    Ak(all,range(5,6),all,range(5,6))(K,k,L,l) += jac * bf(K) * mob_v * ddW_v * (gphi_v(n) * Dbf_g(L,n)) * id2d(k,l);
 
-    Bk(all,range(5,6))(K,k) += (100*jac_upd) * (strain_subs(m,n)*dvstrain_subs(K,k,m,n)) ;
-    Ak(all,range(5,6),all,range(5,6))(K,k,L,l) += (100*jac_upd) * dvstrain_subs(L,l,m,n)*dvstrain_subs(K,k,m,n) ; 
-/*
-    //Elastic energy per unit volume
+    // ε² part after IBP: +∫ ε²·∇²φ·[M·∇N·∇u + N·dM/dφ·∇φ·∇u + N·M·∇²u]
+    {
+        using namespace hiperlife;
+        tensor<double,1> lapNa_v(eNN);
+        tensor<double,2> gNa_tmp(eNN, pDim);
+        tensor<double,3> hNa_tmp(eNN, pDim, pDim);
+        double jac_tmp;
+        GlobalBasisFunctions::hessians(gNa_tmp.data(), jac_tmp, hNa_tmp.data(), lapNa_v.data(), subFill);
 
-    //Elastic energy per unit volume
-    double rho = h;
-    double rho0 = h0;
-    double jac0 = jac;
-    double lame_1 = 10/deltat; 
-    double lame_2 = 50/deltat; 
-    double eta = 1 + 1000*(1+tanh(100*(sqrt(S2_0) -0.7)));
+        double            laphi_v = lapNa_v(K) * nbor_phi(K);
+        tensor<double,1>  lapu_v  = lapNa_v(K) * nbor_u(K,k);
 
-
-    tensor<double,3> voigt_b={{{1,0},{0,0}},{{0,1},{1,0}},{{0,0},{0,1}}};
-    tensor<double,3> voigt_Q = {{{1,0},{0,1}},
-    {{0,1},{-1,0}}};
-
-    //Basis functions times voigt tensor for interpolation of the finger tensor
-    tensor<double,4> bfvoigt_b = bf(K)*voigt_b(l,m,n);
-    tensor<double,4> bf_voigt_Q = outer(bf,voigt_Q.transpose({2,0,1}));
-    //Gradient of the previous tensor (free index for derivation placed at the end)
-    tensor<double,5> Dbf_g_voigt = outer(Dbf_g,voigt_b).transpose({0,2,3,4,1});
-    tensor<double,5> Dbf_g_voigt_Q = outer(Dbf_g,voigt_Q.transpose({2,0,1})).transpose({0,2,3,4,1});
-
-    tensor<double,2> d_divv = (dvDv(K,k,l,m)*id2d(l,m))(K,k);
-
-    //previous time-step
-    tensor<double,2> finger  =  (bfvoigt_b(K,l,m,n)*( nborDOFs(all,range(5,7))(K,l)  ))(m,n);
-    tensor<double,2> finger0 =  (bfvoigt_b(K,l,m,n)*( nborDOFs0(all,range(5,7))(K,l) ))(m,n);
-    tensor<double,2> ifinger0  = finger0.inv();
-    tensor<double,2> ifinger   = finger.inv();
-
-
-    double I = finger(k,l)*id2d(k,l);
-    double J = sqrt(finger.det() * id2d.det());
-
-    elasticmodel2D model;
-    model.neohookean2(lame_1, lame_2, I, J);
-    double elenergy = model.energy;
-    double dI_elenergy = model.dI_energy;
-    double dJ_elenergy = model.dJ_energy;
-    double dII_elenergy = model.dII_energy;
-    double dIJ_elenergy = model.dIJ_energy;
-    double dJJ_elenergy = model.dJJ_energy;
-
-    tensor<double,2> dfinger_I  = id2d;
-    tensor<double,2> dfinger_J  = 0.5 * J * ifinger;     
-    tensor<double,4> ddfinger_J = (0.25 * J * ifinger(k,l)*ifinger(m,n)-0.5 * J * ifinger(k,m)*ifinger(l,n))(k,l,m,n);
-
-    tensor<double,2> dfinger_elenergy = dI_elenergy * dfinger_I(K,k) + dJ_elenergy * dfinger_J(K,k);
-
-    tensor<double,4> ddfinger_elenergy = dII_elenergy * outer(dfinger_I,dfinger_I) + dIJ_elenergy * (outer(dfinger_I,dfinger_J)+outer(dfinger_J,dfinger_I))      + dJJ_elenergy * outer(dfinger_J,dfinger_J) + dJ_elenergy * ddfinger_J;
-
-    tensor<double,2> df_elenergy =  dfinger_elenergy(K,k)*bfvoigt_b(L,l,K,k);  
-    tensor<double,4> ddf_elenergy = product(bfvoigt_b,product(ddfinger_elenergy,bfvoigt_b,{{2,2},{3,3}}),{{2,0},{3,1}});
-
-
-    tensor<double,1> Drho0_g  = nborDOFs0(all,0) * Dbf_g;
-    tensor<double,1> Drho_g   = nborDOFs(all,0)  * Dbf_g;
-
-
-    //[5.2] GRADIENT
-    Bk(all,range(5,7))(K,k) =  (rho * jac) * df_elenergy(K,k);
-    Bk(all,range(3,4))(K,k) +=   dvh_(K,k)*elenergy*jac;
-    //[5.3] HESSIAN
-    //finger - rho
-    Ak(all,range(5,7),all,0)          +=  outer(jac * df_elenergy,bf);
-    Ak(all,range(5,7),all,range(5,7)) +=  rho * jac * ddf_elenergy;
-
-
-    Ak(all,range(3,4),all,0)(K,k,L)   +=  dvdhh_(K,k,L)*elenergy*jac;
-    Ak(all,range(3,4),all,range(5,7))(K,k,L,l)   +=  dvh_(K,k)*df_elenergy(L,l)*jac;
-
-
-
-
-    //[6] DISSIPATION
-
-    //[6] DISSIPATION
-
-    tensor<double,3> Dfinger0_g = product(nborDOFs0(all,range(5,7)),Dbf_g_voigt,{{0,0},{1,1}});
-    tensor<double,2> lieFinger = (finger(k,l)-finger0(k,l))/deltat+ Dfinger0_g(k,l,m)*v(m)  - finger0(k,m)*Dv(l,m)  - Dv(k,m)*finger0(m,l) ;
-    tensor<double,4> help1 =  (bf(K)*Dfinger0_g(k,l,m))(K,m,k,l);   
-    tensor<double,4> help  =  (finger0(k,m)*dvDv(K,n,l,m))(K,n,k,l)  + (dvDv(K,n,k,m)*finger0(m,l))(K,n,k,l) ;
-    //[6.1] RAYLEIGHIAN
-    rayleighian += (eta/4.0 * jac0 * rho0) * product(lieFinger,lieFinger,{{0,0},{1,1}});
-    //[6.2] GRADIENT
-    Bk(all,range(5,7)) += (eta/2.0 * jac0 * rho0) * product(bfvoigt_b, lieFinger*ifinger0,{{2,0},{3,1}})/deltat;
-    Bk(all,range(3,4)) += (eta/2.0 * jac0 * rho0) * product(help1,lieFinger*ifinger0,{{2,0},{3,1}});
-    Bk(all,range(3,4)) -= (eta/2.0 * jac0 * rho0) * product(help, lieFinger*ifinger0,{{2,0},{3,1}});
-    //[6.3] HESSIAN
-    //b - all
-    Ak(all,range(5,7),all,range(5,7)) += (eta/2.0 * jac0 * rho0) * product(bfvoigt_b,  bfvoigt_b*ifinger0,{{2,2},{3,3}})/(deltat*deltat);
-    Ak(all,range(5,7),all,range(3,4)) += (eta/2.0 * jac0 * rho0) * product(bfvoigt_b,  help1*ifinger0,{{2,2},{3,3}})/deltat;
-    Ak(all,range(5,7),all,range(3,4)) -= (eta/2.0 * jac0 * rho0) * product(bfvoigt_b,  help*ifinger0,{{2,2},{3,3}})/deltat;
-
-    //[6] DISSIPATION      //v - all
-    Ak(all,range(3,4),all,range(5,7)) += (eta/2.0 * jac0 * rho0) * product(help1,   bfvoigt_b*ifinger0,{{2,2},{3,3}})/deltat;
-    Ak(all,range(3,4),all,range(3,4)) += (eta/2.0 * jac0 * rho0) * product(help1,   help1*ifinger0,{{2,2},{3,3}});
-    Ak(all,range(3,4),all,range(3,4)) -= (eta/2.0 * jac0 * rho0) * product(help1,   help*ifinger0,{{2,2},{3,3}});
-
-    Ak(all,range(3,4),all,range(5,7)) -= (eta/2.0 * jac0 * rho0) * product(help, bfvoigt_b*ifinger0,{{2,2},{3,3}})/deltat;
-    Ak(all,range(3,4),all,range(3,4)) -= (eta/2.0 * jac0 * rho0) * product(help,   help1*ifinger0,{{2,2},{3,3}});
-    Ak(all,range(3,4),all,range(3,4)) += (eta/2.0 * jac0 * rho0) * product(help,   help*ifinger0,{{2,2},{3,3}});
-
-    */
-
-
-
+        Bk(all,range(5,6))(K,k) += jac * epsilon2 * laphi_v * (
+              mob_v    * (Dbf_g(K,n) * Du(k,n))
+            + bf(K) * dM_dphi_v * (gphi_v(n) * Du(k,n))
+            + bf(K) * mob_v     * lapu_v(k)
+        );
+        Ak(all,range(5,6),all,range(5,6))(K,k,L,l) += jac * epsilon2 * laphi_v * (
+              mob_v    * (Dbf_g(K,n) * Dbf_g(L,n)) * id2d(k,l)
+            + bf(K) * dM_dphi_v * (gphi_v(n) * Dbf_g(L,n)) * id2d(k,l)
+            + bf(K) * mob_v     * lapNa_v(L)        * id2d(k,l)
+        );
+    }
 
 }
 
